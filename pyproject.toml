@@ -28,12 +28,12 @@ plotting = [
   "bokeh>=3.4.2",
   "numpy>=2.0.0"
 ]
+spice = ["spiceypy>=6.0.0"]
 #gui = ["PyQt5"]
 #cli = [
 #  "rich",
 #  "click",
 #]
-#spice = ["spiceypy"]
 
 [project.urls]
 Homepage = "https://mattdailis.github.io/pymerlin"
