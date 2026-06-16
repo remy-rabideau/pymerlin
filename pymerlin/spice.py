@@ -59,8 +59,6 @@ class SpiceKernel:
         
         self.kernel_paths = kernel_paths
         self._kernels_loaded = False
-        
-        registrar.discrete("/spice/kernels_loaded", lambda: self._kernels_loaded)
     
     def load_kernels(self):
         """Load all configured SPICE kernels."""
