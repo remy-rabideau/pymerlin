@@ -20,8 +20,9 @@ Download kernels from: https://naif.jpl.nasa.gov/naif/data.html
 
 from pymerlin import MissionModel, simulate, Schedule, Directive
 from pymerlin.spice import SpiceKernel, duration_to_et, SPICE_AVAILABLE
-from pymerlin.model_actions import delay
+from pymerlin.model_actions import delay, spawn
 from pymerlin.clock import clock
+from pymerlin.duration import Duration
 
 KERNELS_PATH_ROOT = "/Users/remyr/Desktop/pymerlin/kernels"
 
@@ -47,9 +48,9 @@ class SpacecraftMission:
         # Initialize SPICE with kernel files
         # NOTE: Update these paths to point to your actual SPICE kernels
         self.spice = SpiceKernel(registrar, kernel_paths=[
-             f"{KERNELS_PATH_ROOT}/naif0012.tls",     # Leap seconds kernel
-             f"{KERNELS_PATH_ROOT}/de440s.bsp",       # Planetary ephemeris (Moon/Earth)
-             # f"{KERNELS_PATH_ROOT}/mro_psp.bsp"     # Spacecraft kernel (not used in this demo)
+             f"{KERNELS_PATH_ROOT}/lsk/naif0012.tls",           # Leap seconds kernel
+             f"{KERNELS_PATH_ROOT}/spk/planets/de440s.bsp",     # Planetary ephemeris (Moon/Earth)
+             # f"{KERNELS_PATH_ROOT}/spk/mro/mro_psp.bsp"       # Spacecraft kernel (not used in this demo)
         ])
         
         # Load kernels at mission start
@@ -76,6 +77,7 @@ def update_position(mission: SpacecraftMission, target: str = "MOON", observer: 
         target: Target body name (default: "MOON")
         observer: Observer body name (default: "EARTH")
     """
+
     # Get current simulation time
     sim_time = mission.clock.get()
     
@@ -108,8 +110,7 @@ def periodic_position_update(mission: SpacecraftMission, interval: str = "01:00:
         interval: Time between updates (default: 1 hour)
         duration_str: Total duration to run updates (default: 24 hours)
     """
-    from pymerlin.duration import Duration
-    from pymerlin.model_actions import spawn
+    
     
     total = Duration.from_string(duration_str)
     step = Duration.from_string(interval)
