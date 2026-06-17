@@ -27,10 +27,7 @@ from pymerlin.clock import clock
 try:
     import spiceypy as spice
 except ImportError:
-    spice = None
     SPICE_AVAILABLE = False
-
-KERNELS_PATH_ROOT = "/Users/remyr/Desktop/pymerlin/kernels"
 
 if not SPICE_AVAILABLE:
     print("This example requires spiceypy. Install with: pip install pymerlin[spice]")
@@ -38,6 +35,8 @@ if not SPICE_AVAILABLE:
 
 
 # ----- CONSTANTS AND MISSION CONSTRAINTS -----
+
+KERNELS_PATH_ROOT = "/Users/remyr/Desktop/pymerlin/kernels"
 
 LIGHTSPEED_KM_S = 299792.458
 
@@ -163,7 +162,7 @@ def check_communication_window(mission: MROmission):
     - Antenna pointing
     - Signal strength
     """
-    
+
     earth_dist = mission.earth_distance.get()
     
     # Light time in seconds
