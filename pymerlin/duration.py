@@ -94,6 +94,19 @@ class Duration:
 
         return self.__micros / unit.__micros
 
+    @property
+    def micros(self):
+        """
+        Get the duration in microseconds.
+        
+        This property provides access to the internal microsecond representation
+        for backward compatibility and internal use (e.g., plotting).
+        
+        Returns:
+            int: Duration in microseconds
+        """
+        return self.__micros
+
     @staticmethod
     def of(scalar, unit):
         return unit.times(scalar)
@@ -163,7 +176,7 @@ class Duration:
             microseconds).zfill(6)
 
     def __eq__(self, other):
-        return type(other) == type(self) and self.__micros == other.__micros
+        return isinstance(other, Duration) and self.__micros == other.__micros
 
     def __gt__(self, other):
         return self.__micros.__gt__(other)
