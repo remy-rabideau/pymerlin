@@ -37,6 +37,20 @@ if not SPICE_AVAILABLE:
     exit(1)
 
 
+# ----- CONSTANTS AND MISSION CONSTRAINTS -----
+
+LIGHTSPEED_KM_S = 299792.458
+
+# Solar constant at 1 AU (Earth's distance): ~1361 W/m²
+# 1 AU = 149,597,870.7 km
+AU_KM = 149597870.7
+SOLAR_CONSTANT = 1361.0  # W/m²
+
+# Assume MRO has ~10 m² of solar panels with ~30% efficiency
+PANEL_AREA = 10.0  # m²
+EFFICIENCY = 0.30
+
+
 @MissionModel
 class MROmission:
     """
@@ -133,7 +147,7 @@ def update_mro_state(mission: MROmission):
     print(f"=== MRO State at {current_utc} ===")
     print(f"  Simulation time: {sim_time}")
     print(f"  Altitude above Mars: {altitude:,.2f} km")
-    print(f"  Distance to Earth: {earth_distance:,.2f} km ({earth_distance/299792.458:.2f} light-seconds)")
+    print(f"  Distance to Earth: {earth_distance:,.2f} km ({earth_distance/LIGHTSPEED_KM_S:.2f} light-seconds)")
     print(f"  Distance to Sun: {solar_distance:,.2f} km")
     print()
 
@@ -149,10 +163,11 @@ def check_communication_window(mission: MROmission):
     - Antenna pointing
     - Signal strength
     """
+    
     earth_dist = mission.earth_distance.get()
     
     # Light time in seconds
-    light_time_seconds = earth_dist / 299792.458
+    light_time_seconds = earth_dist / LIGHTSPEED_KM_S
     light_time_minutes = light_time_seconds / 60.0
     
     print("Communication Check:")
@@ -176,19 +191,11 @@ def estimate_solar_power(mission: MROmission):
     
     Solar power decreases with the square of distance from the Sun.
     """
+
     solar_dist = mission.solar_distance.get()
-    
-    # Solar constant at 1 AU (Earth's distance): ~1361 W/m²
-    # 1 AU = 149,597,870.7 km
-    AU_KM = 149597870.7
-    SOLAR_CONSTANT = 1361.0  # W/m²
     
     # Calculate solar flux at MRO's distance
     solar_flux = SOLAR_CONSTANT * (AU_KM / solar_dist) ** 2
-    
-    # Assume MRO has ~10 m² of solar panels with ~30% efficiency
-    PANEL_AREA = 10.0  # m²
-    EFFICIENCY = 0.30
     
     estimated_power = solar_flux * PANEL_AREA * EFFICIENCY
     
@@ -203,6 +210,7 @@ def main():
     """
     Run MRO mission simulation with SPICE.
     """
+
     print("=" * 70)
     print("MRO Mission Simulation with SPICE")
     print("=" * 70)
