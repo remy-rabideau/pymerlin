@@ -247,7 +247,7 @@ def et_to_duration(et: float, epoch_et: float = 0.0) -> Duration:
         Duration since simulation start
     """
     seconds = et - epoch_et
-    return Duration.from_number_in(seconds, SECONDS)
+    return Duration.of(seconds, SECONDS)
 
 
 __all__ = [
