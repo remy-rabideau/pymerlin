@@ -58,7 +58,7 @@ class MyMission:
 from pymerlin.spice import duration_to_et
 
 @MyMission.ActivityType
-async def compute_position(mission):
+def compute_position(mission):
     # Get current simulation time
     sim_time = mission.clock.get()
     
