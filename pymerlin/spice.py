@@ -9,20 +9,30 @@ To use this module, install pymerlin with the spice extra:
     pip install pymerlin[spice]
 
 Example usage:
+    from pymerlin import MissionModel
     from pymerlin.spice import SpiceKernel, spice_resource
+    from pymerlin.clock import clock
     
     @MissionModel
     class MyMission:
         def __init__(self, registrar):
+            # Initialize clock
+            clock_maker = clock(registrar)
+            self.clock = clock_maker._system_clock
+            
+            # Initialize SPICE
             self.spice = SpiceKernel(registrar, kernel_paths=[
                 "/path/to/naif0012.tls",  # Leap seconds kernel
                 "/path/to/de440.bsp",      # Planetary ephemeris
                 "/path/to/spacecraft.bsp"  # Spacecraft ephemeris
             ])
+            self.spice.load_kernels()
+            self.epoch_et = self.spice.utc_to_et("2024-01-01T00:00:00")
             
-            # Create a resource that computes spacecraft position at simulation time
-            registrar.resource("/position", 
-                spice_resource(self.spice, "SPACECRAFT", "EARTH", "J2000"))
+            # Create a resource that computes spacecraft distance at simulation time
+            registrar.resource("/spacecraft/distance", 
+                spice_resource(self.spice, self.clock, self.epoch_et,
+                              "SPACECRAFT", "EARTH", "J2000"))
 """
 
 try:
@@ -128,7 +138,7 @@ class SpiceKernel:
         )
         return state[3], state[4], state[5]
     
-    def state(self, target: str, observer: str, frame: str, et: float) -> Tuple[float, ...]:
+    def state(self, target: str, observer: str, frame: str, et: float) -> Tuple[float, float, float, float, float, float]:
         """
         Compute full state (position and velocity) of target relative to observer.
         
@@ -186,37 +196,67 @@ class SpiceKernel:
         return spice.et2utc(et, format, precision)
 
 
-def spice_resource(spice_kernel: SpiceKernel, target: str, observer: str, frame: str, 
-                   computation: str = "position") -> Callable:
+def spice_resource(spice_kernel: SpiceKernel, 
+                   clock_cell,
+                   epoch_et: float,
+                   target: str, 
+                   observer: str, 
+                   frame: str, 
+                   computation_fn: Callable = None) -> Callable:
     """
-    Create a resource function that computes SPICE values at simulation time.
+    Create a resource function that computes SPICE-derived scalar values at simulation time.
     
-    This is a convenience function for creating resources that automatically
-    compute geometric quantities at the current simulation time.
+    Note: Resources must return Java-serializable types (numbers, strings, booleans).
+    Raw SPICE tuples (position, velocity, state) cannot be directly returned as resources.
+    Use this helper to compute derived scalar quantities like distance, speed, etc.
     
     Args:
         spice_kernel: SpiceKernel instance
+        clock_cell: Clock cell that provides current simulation time
+        epoch_et: Ephemeris time at simulation start (seconds past J2000)
         target: Name of target body
         observer: Name of observing body
         frame: Reference frame (e.g., "J2000")
-        computation: Type of computation ("position", "velocity", or "state")
+        computation_fn: Optional function that takes (position_tuple) and returns a scalar.
+                       If None, returns distance magnitude by default.
     
     Returns:
         A function that can be registered as a resource
     
     Example:
-        registrar.resource("/spacecraft/position", 
-            spice_resource(self.spice, "SPACECRAFT", "EARTH", "J2000"))
+        # Compute distance
+        registrar.resource("/spacecraft/distance", 
+            spice_resource(self.spice, self.clock, self.epoch_et,
+                          "SPACECRAFT", "EARTH", "J2000"))
+        
+        # Compute custom quantity
+        def compute_altitude(pos):
+            distance = (pos[0]**2 + pos[1]**2 + pos[2]**2)**0.5
+            return distance - 6371.0  # Subtract Earth radius
+        
+        registrar.resource("/spacecraft/altitude",
+            spice_resource(self.spice, self.clock, self.epoch_et,
+                          "SPACECRAFT", "EARTH", "J2000", compute_altitude))
     """
+    
+    if computation_fn is None:
+        # Default: compute distance magnitude
+        def default_distance(pos):
+            return (pos[0]**2 + pos[1]**2 + pos[2]**2)**0.5
+        computation_fn = default_distance
     
     def resource_fn():
         # Get current simulation time
-        # This assumes the mission model has a clock registered
-        # In practice, you may need to pass the clock or time cell explicitly
-        raise NotImplementedError(
-            "spice_resource needs access to simulation time. "
-            "Use SpiceKernel methods directly in your resource functions."
-        )
+        sim_time = clock_cell.get()
+        
+        # Convert to ephemeris time
+        et = duration_to_et(sim_time, epoch_et)
+        
+        # Compute position
+        position = spice_kernel.position(target, observer, frame, et)
+        
+        # Apply computation function to get scalar result
+        return float(computation_fn(position))
     
     return resource_fn
 
