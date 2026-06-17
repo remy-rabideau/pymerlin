@@ -21,7 +21,7 @@ Download kernels from:
 """
 
 from pymerlin import MissionModel, simulate, Schedule, Directive
-from pymerlin.spice import SpiceKernel, duration_to_et, SPICE_AVAILABLE
+from pymerlin.spice import SpiceKernel, duration_to_et, spice_resource, SPICE_AVAILABLE
 from pymerlin.clock import clock
 
 try:
@@ -85,15 +85,21 @@ class MROmission:
         # Using a time well into the coverage to avoid edge effects
         self.epoch_et = self.spice.utc_to_et("2026-04-05T12:00:00")
         
-        # Cells to store mission state
+        # Cells to store mission state (updated by activities)
         self.altitude = registrar.cell(0.0)           # Altitude above Mars surface (km)
         self.earth_distance = registrar.cell(0.0)     # Distance to Earth (km)
         self.solar_distance = registrar.cell(0.0)     # Distance to Sun (km)
         
-        # Register resources
+        # Register cell-based resources (updated periodically by activities)
         registrar.resource("/mro/altitude", self.altitude.get)
         registrar.resource("/mro/earth_distance", self.earth_distance.get)
         registrar.resource("/mro/solar_distance", self.solar_distance.get)
+        
+        # Register a continuous spice_resource for comparison
+        # This computes MRO-Mars distance on-demand without needing activity updates
+        registrar.resource("/mro/mars_distance_continuous",
+            spice_resource(self.spice, self.clock, self.epoch_et,
+                          "MRO", "MARS", "J2000"))
 
 
 @MROmission.ActivityType
@@ -241,6 +247,12 @@ def main():
         print("Simulation completed successfully!")
         print(f"Generated {len(spans)} activity spans")
         print(f"Tracked {len(profiles)} resources")
+        print("=" * 70)
+        print("\nResource Patterns Demonstrated:")
+        print("  - Cell-based: /mro/altitude, /mro/earth_distance, /mro/solar_distance")
+        print("    (Updated by activities at specific times)")
+        print("  - spice_resource: /mro/mars_distance_continuous")
+        print("    (Computed on-demand, always current)")
         print("=" * 70)
         
     except Exception as e:
