@@ -53,7 +53,7 @@ except ImportError:
     SPICE_AVAILABLE = False
     spice = None
 
-from .duration import Duration, SECONDS, _parse_iso8601, _parse_doy
+from .duration import Duration, SECONDS, _parse_iso8601_timestamp, _parse_doy
 
 
 class SpiceKernel:
@@ -209,7 +209,7 @@ class SpiceKernel:
         
         elif self._is_iso8601_format(utc_string):
             # Convert ISO 8601 to SPICE format via datetime
-            dt = _parse_iso8601(utc_string)
+            dt = _parse_iso8601_timestamp(utc_string)
             # Convert to SPICE calendar format: "YYYY MON DD HR:MN:SC.###"
             spice_format = dt.strftime("%Y %b %d %H:%M:%S.%f")
             return spice.str2et(spice_format.upper())

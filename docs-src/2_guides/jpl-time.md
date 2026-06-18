@@ -2,42 +2,29 @@
 
 ## Overview
 
-This document describes the implementation of JPL/Aerie time format support in pymerlin for the `feature/jpl-time` branch. Steps 1-3 are complete: Duration class extensions, SPICE integration, and comprehensive testing.
+This document describes the implementation of JPL/Aerie time format support in pymerlin. The implementation matches Aerie's approach to time handling, distinguishing between:
+- **Duration**: Relative time intervals (ISO 8601 duration format)
+- **SPICE**: Absolute timestamps (ISO 8601 and DOY timestamp formats)
 
 ## What Was Implemented
 
-### 1. ISO 8601 Time Format Support
+### 1. ISO 8601 Duration Support (Aerie-Compatible)
 
-Added methods to the `Duration` class for working with ISO 8601 timestamps:
+Added methods to the `Duration` class matching Aerie's `Duration.parseISO8601()` and `Duration.toISO8601()`:
 
-- **`Duration.from_iso8601(iso_string, epoch_iso)`**: Parse an ISO 8601 timestamp and return a Duration relative to an epoch
-- **`duration.to_iso8601(epoch_iso)`**: Convert a Duration to an ISO 8601 timestamp
+- **`Duration.parse_iso8601(iso8601_string)`**: Parse an ISO 8601 duration string
+- **`duration.to_iso8601()`**: Convert a Duration to an ISO 8601 duration string
 
-**Supported formats:**
-- `2024-01-01T12:30:45Z` (UTC with Z suffix)
-- `2024-01-01T12:30:45.123456Z` (with microseconds)
-- `2024-01-01T12:30:45+00:00` (with timezone offset)
-- `2024-01-01T12:30:45.123456+00:00` (with microseconds and timezone)
+**Supported ISO 8601 duration formats:**
+- `PT12H30M45S` (12 hours, 30 minutes, 45 seconds)
+- `PT1H` (1 hour)
+- `PT30M` (30 minutes)
+- `PT45.5S` (45.5 seconds)
+- `P1DT12H` (1 day and 12 hours)
 
-### 2. DOY (Day of Year) Time Format Support
+**Note**: These parse **duration/interval** format (e.g., `PT12H`), not timestamp format (e.g., `2024-01-01T12:00:00Z`). This matches Aerie's Duration class design.
 
-Added methods for NASA/JPL's Day of Year format:
-
-- **`Duration.from_doy(doy_string, epoch_doy)`**: Parse a DOY timestamp and return a Duration relative to an epoch
-- **`duration.to_doy(epoch_doy)`**: Convert a Duration to a DOY timestamp
-
-**Format:**
-- `YYYY-DDDTHH:MM:SS.ffffff`
-- Example: `2024-095T12:30:45.123456` (95th day of 2024)
-
-### 3. Helper Functions
-
-Added internal parsing functions in `duration.py`:
-
-- **`_parse_iso8601(iso_string)`**: Parse ISO 8601 strings to Python datetime objects
-- **`_parse_doy(doy_string)`**: Parse DOY strings to Python datetime objects
-
-### 4. SPICE Integration
+### 2. SPICE Integration (Absolute Timestamps)
 
 Extended `SpiceKernel` class to accept JPL time formats:
 
@@ -53,110 +40,106 @@ Added convenience functions in `spice.py`:
 
 ## Key Features
 
-1. **Microsecond Precision**: All conversions maintain microsecond precision, matching pymerlin's internal Duration representation
-2. **Timezone Support**: ISO 8601 parser handles timezone offsets and converts to UTC
-3. **Negative Durations**: Supports times before the epoch (negative durations)
-4. **Leap Year Support**: DOY format correctly handles leap years
-5. **Roundtrip Conversions**: Converting to/from absolute timestamps is reversible
+1. **Aerie Compatibility**: Duration methods match Aerie's `parseISO8601()` and `toISO8601()` API
+2. **Microsecond Precision**: All conversions maintain microsecond precision
+3. **ISO 8601 Duration Format**: Supports standard duration format (`PT12H30M45S`)
+4. **Negative Durations**: Supports negative time intervals
+5. **SPICE Timestamp Support**: Handles ISO 8601 and DOY timestamp formats for absolute time
+6. **Automatic Format Detection**: SPICE methods automatically detect and convert timestamp formats
 
 ## Usage Examples
 
-### Basic ISO 8601 Usage
-
-```python
-from pymerlin.duration import Duration, HOURS
-
-# Define mission epoch
-epoch = "2024-01-01T00:00:00Z"
-
-# Parse an absolute timestamp
-duration = Duration.from_iso8601("2024-01-01T12:00:00Z", epoch)
-print(duration.to_number_in(HOURS))  # 12.0
-
-# Convert back to ISO 8601
-timestamp = duration.to_iso8601(epoch)
-print(timestamp)  # "2024-01-01T12:00:00.000000Z"
-```
-
-### Basic DOY Usage
-
-```python
-from pymerlin.duration import Duration, HOURS
-
-# Define mission epoch (Day 1 of 2024)
-epoch = "2024-001T00:00:00"
-
-# Parse a DOY timestamp (Day 2 of 2024)
-duration = Duration.from_doy("2024-002T00:00:00", epoch)
-print(duration.to_number_in(HOURS))  # 24.0
-
-# Convert back to DOY
-timestamp = duration.to_doy(epoch)
-print(timestamp)  # "2024-002T00:00:00.000000"
-```
-
-### Mission Planning Example
+### ISO 8601 Duration Format (Aerie-Compatible)
 
 ```python
 from pymerlin.duration import Duration, HOURS, MINUTES
 
-# Define mission epoch
-mission_start = "2024-096T12:00:00"  # April 5, 2024
+# Parse ISO 8601 duration strings
+d1 = Duration.parse_iso8601("PT12H30M45S")  # 12 hours, 30 minutes, 45 seconds
+print(d1)  # +12:30:45.000000
 
-# Define activities relative to mission start
+d2 = Duration.parse_iso8601("PT1H")  # 1 hour
+print(d2.to_number_in(HOURS))  # 1.0
+
+d3 = Duration.parse_iso8601("PT90M")  # 90 minutes
+print(d3.to_number_in(HOURS))  # 1.5
+
+# Convert Duration to ISO 8601 format
+duration = Duration.of(12, HOURS).plus(Duration.of(30, MINUTES))
+print(duration.to_iso8601())  # "PT12H30M"
+
+# Roundtrip conversion
+original = "PT2H15M30.5S"
+parsed = Duration.parse_iso8601(original)
+back = parsed.to_iso8601()
+print(f"{original} -> {parsed} -> {back}")
+```
+
+### Mission Planning with Durations
+
+```python
+from pymerlin.duration import Duration, HOURS, MINUTES
+
+# Define activities as relative time intervals
 activities = [
     (Duration.ZERO, "Launch"),
     (Duration.of(2, HOURS), "Orbit Insertion"),
-    (Duration.of(6, HOURS) + Duration.of(30, MINUTES), "Deploy Solar Panels"),
+    (Duration.of(6, HOURS).plus(Duration.of(30, MINUTES)), "Deploy Solar Panels"),
+    (Duration.parse_iso8601("PT12H"), "First Downlink"),
 ]
 
-# Convert to absolute timestamps
+# Display activity schedule
 for duration, activity in activities:
-    timestamp = duration.to_doy(mission_start)
-    print(f"{timestamp} - {activity}")
+    print(f"T+{duration} - {activity}")
+    # Output: T++00:00:00.000000 - Launch
+    #         T++02:00:00.000000 - Orbit Insertion
+    #         T++06:30:00.000000 - Deploy Solar Panels
+    #         T++12:00:00.000000 - First Downlink
 ```
 
-## Integration with SPICE
+## Integration with SPICE (Absolute Timestamps)
 
-The JPL time format support integrates seamlessly with pymerlin's SPICE module. `SpiceKernel.utc_to_et()` now automatically accepts all time formats:
+SPICE handles **absolute timestamps** (points in time), while Duration handles **relative intervals**. SPICE's `utc_to_et()` automatically accepts multiple timestamp formats:
 
 ```python
-from pymerlin.spice import SpiceKernel, iso8601_to_et, doy_to_et
+from pymerlin.spice import SpiceKernel, iso8601_to_et, doy_to_et, duration_to_et
 from pymerlin.duration import Duration, HOURS
 
 spice = SpiceKernel(registrar, kernel_paths=[...])
 spice.load_kernels()
 
-# All three formats work automatically
-epoch_et_iso = spice.utc_to_et("2024-04-05T12:00:00Z")      # ISO 8601
-epoch_et_doy = spice.utc_to_et("2024-096T12:00:00")         # DOY format
+# Parse absolute timestamps to ephemeris time (ET)
+# All three timestamp formats work automatically:
+epoch_et_iso = spice.utc_to_et("2024-04-05T12:00:00Z")      # ISO 8601 timestamp
+epoch_et_doy = spice.utc_to_et("2024-096T12:00:00")         # DOY timestamp
 epoch_et_native = spice.utc_to_et("2024 APR 05 12:00:00")  # SPICE native
 
 # Or use convenience functions
 epoch_et = iso8601_to_et(spice, "2024-04-05T12:00:00Z")
 epoch_et = doy_to_et(spice, "2024-096T12:00:00")
 
-# Work with durations
-t_plus_3h = Duration.of(3, HOURS)
-absolute_time_doy = t_plus_3h.to_doy("2024-096T12:00:00")
-absolute_time_iso = t_plus_3h.to_iso8601("2024-04-05T12:00:00Z")
+# Convert simulation time (Duration) to absolute time (ET)
+sim_time = Duration.of(3, HOURS)  # 3 hours into simulation
+absolute_et = duration_to_et(sim_time, epoch_et)  # Absolute ephemeris time
+
+# Use Duration's ISO 8601 format for time intervals (not timestamps!)
+interval = Duration.parse_iso8601("PT3H")  # 3 hour interval
+print(interval.to_iso8601())  # "PT3H"
 ```
 
 ## Testing
 
 ### Duration Tests (`tests/test_jpl_time.py`)
 
-Comprehensive tests for Duration class JPL time format support:
+Comprehensive tests for Duration class ISO 8601 duration support:
 
-- Basic ISO 8601 parsing
-- ISO 8601 with microseconds
-- ISO 8601 with timezone offsets
-- Basic DOY parsing
-- DOY with microseconds
-- Leap year handling
-- Roundtrip conversions
-- Negative durations (times before epoch)
-- Cross-year boundaries
+- Basic ISO 8601 duration parsing (`PT12H30M45S`)
+- ISO 8601 with fractional seconds (`PT45.5S`)
+- ISO 8601 with days (`P1DT12H`)
+- Various duration formats (`PT1H`, `PT30M`, etc.)
+- Roundtrip conversions (parse → Duration → to_iso8601)
+- Negative durations
+- Edge cases (zero duration, very large durations)
 - Invalid format error handling
 
 ### SPICE Integration Tests (`tests/test_spice.py`)

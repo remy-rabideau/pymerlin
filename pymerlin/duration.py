@@ -116,64 +116,63 @@ class Duration:
         return unit.times(scalar)
 
     @staticmethod
-    def from_iso8601(iso_string, epoch_iso):
+    def parse_iso8601(iso8601_string):
         """
-        Create a Duration from an ISO 8601 timestamp relative to an epoch.
+        Parse an ISO 8601 duration string.
         
-        This method supports JPL/Aerie time formats:
-        - ISO 8601: "2024-01-01T12:30:45.123456Z"
-        - ISO 8601 with timezone: "2024-01-01T12:30:45+00:00"
+        Matches Aerie's Duration.parseISO8601() method.
+        
+        Supports ISO 8601 duration format:
+        - "PT12H30M45S" (12 hours, 30 minutes, 45 seconds)
+        - "PT1H" (1 hour)
+        - "PT30M" (30 minutes)
+        - "PT45.5S" (45.5 seconds)
+        - "P1DT12H" (1 day and 12 hours)
         
         Args:
-            iso_string: ISO 8601 formatted timestamp
-            epoch_iso: ISO 8601 formatted epoch timestamp
+            iso8601_string: ISO 8601 duration string (e.g., "PT12H30M45S")
             
         Returns:
-            Duration representing time elapsed since epoch
+            Duration representing the parsed time interval
             
         Examples:
-            >>> epoch = "2024-01-01T00:00:00Z"
-            >>> Duration.from_iso8601("2024-01-01T12:00:00Z", epoch)
-            Duration(+12:00:00.000000)
+            >>> Duration.parse_iso8601("PT12H30M45S")
+            Duration(+12:30:45.000000)
+            >>> Duration.parse_iso8601("PT1H")
+            Duration(+01:00:00.000000)
         """
-        # Parse ISO strings to datetime objects
-        target_dt = _parse_iso8601(iso_string)
-        epoch_dt = _parse_iso8601(epoch_iso)
+        # Use Python's timedelta parsing via isodate or manual parsing
+        # Python's datetime doesn't have built-in ISO 8601 duration parsing
+        # We'll implement a simple parser for common cases
         
-        # Calculate difference in microseconds
-        delta = target_dt - epoch_dt
-        total_micros = int(delta.total_seconds() * 1_000_000)
+        import re
         
-        return Duration.of(total_micros, MICROSECONDS)
-    
-    @staticmethod
-    def from_doy(doy_string, epoch_doy):
-        """
-        Create a Duration from a DOY (Day of Year) timestamp relative to an epoch.
+        # ISO 8601 duration format: P[n]Y[n]M[n]DT[n]H[n]M[n]S
+        pattern = r'P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?'
+        match = re.match(pattern, iso8601_string)
         
-        DOY format is commonly used in JPL/NASA missions:
-        - Format: "YYYY-DDDTHH:MM:SS.ffffff"
-        - Example: "2024-095T12:30:45.123456" (95th day of 2024)
+        if not match:
+            raise ValueError(f"Invalid ISO 8601 duration format: {iso8601_string}")
         
-        Args:
-            doy_string: DOY formatted timestamp
-            epoch_doy: DOY formatted epoch timestamp
-            
-        Returns:
-            Duration representing time elapsed since epoch
-            
-        Examples:
-            >>> epoch = "2024-001T00:00:00"
-            >>> Duration.from_doy("2024-002T00:00:00", epoch)
-            Duration(+24:00:00.000000)
-        """
-        # Parse DOY strings to datetime objects
-        target_dt = _parse_doy(doy_string)
-        epoch_dt = _parse_doy(epoch_doy)
+        years, months, days, hours, minutes, seconds = match.groups()
         
-        # Calculate difference in microseconds
-        delta = target_dt - epoch_dt
-        total_micros = int(delta.total_seconds() * 1_000_000)
+        # Convert to microseconds
+        total_micros = 0
+        
+        if years:
+            # Approximate: 365.25 days per year
+            total_micros += int(years) * 365 * 24 * 3600 * 1_000_000
+        if months:
+            # Approximate: 30 days per month
+            total_micros += int(months) * 30 * 24 * 3600 * 1_000_000
+        if days:
+            total_micros += int(days) * 24 * 3600 * 1_000_000
+        if hours:
+            total_micros += int(hours) * 3600 * 1_000_000
+        if minutes:
+            total_micros += int(minutes) * 60 * 1_000_000
+        if seconds:
+            total_micros += int(float(seconds) * 1_000_000)
         
         return Duration.of(total_micros, MICROSECONDS)
     
@@ -262,63 +261,59 @@ class Duration:
     def __add__(self, other):
         return self.plus(other)
     
-    def to_iso8601(self, epoch_iso):
+    def to_iso8601(self):
         """
-        Convert this Duration to an ISO 8601 timestamp.
+        Convert this Duration to an ISO 8601 duration string.
         
-        Args:
-            epoch_iso: ISO 8601 formatted epoch timestamp
-            
+        Matches Aerie's Duration.toISO8601() method.
+        
         Returns:
-            ISO 8601 formatted timestamp string
+            ISO 8601 duration string (e.g., "PT12H30M45.123456S")
             
         Examples:
-            >>> epoch = "2024-01-01T00:00:00Z"
-            >>> duration = Duration.from_string("12:00:00")
-            >>> duration.to_iso8601(epoch)
-            "2024-01-01T12:00:00.000000Z"
+            >>> Duration.of(12, HOURS).to_iso8601()
+            "PT12H"
+            >>> Duration.of(90, MINUTES).to_iso8601()
+            "PT1H30M"
+            >>> Duration.from_string("12:30:45.123456").to_iso8601()
+            "PT12H30M45.123456S"
         """
-        # Parse epoch
-        epoch_dt = _parse_iso8601(epoch_iso)
+        # Convert microseconds to timedelta and use isoformat
+        td = timedelta(microseconds=self.__micros)
         
-        # Add duration to epoch
-        delta = timedelta(microseconds=self.__micros)
-        result_dt = epoch_dt + delta
+        # Python's timedelta doesn't have a direct ISO 8601 duration formatter
+        # We'll build it manually
+        total_seconds = td.total_seconds()
+        is_negative = total_seconds < 0
         
-        # Format as ISO 8601 with microseconds
-        return result_dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
-    
-    def to_doy(self, epoch_doy):
-        """
-        Convert this Duration to a DOY (Day of Year) timestamp.
+        if is_negative:
+            total_seconds = -total_seconds
         
-        Args:
-            epoch_doy: DOY formatted epoch timestamp
-            
-        Returns:
-            DOY formatted timestamp string
-            
-        Examples:
-            >>> epoch = "2024-001T00:00:00"
-            >>> duration = Duration.from_string("24:00:00")
-            >>> duration.to_doy(epoch)
-            "2024-002T00:00:00.000000"
-        """
-        # Parse epoch
-        epoch_dt = _parse_doy(epoch_doy)
+        hours = int(total_seconds // 3600)
+        remaining = total_seconds - (hours * 3600)
+        minutes = int(remaining // 60)
+        seconds = remaining - (minutes * 60)
         
-        # Add duration to epoch
-        delta = timedelta(microseconds=self.__micros)
-        result_dt = epoch_dt + delta
+        # Build ISO 8601 duration string
+        result = "PT"
+        if hours > 0:
+            result += f"{hours}H"
+        if minutes > 0:
+            result += f"{minutes}M"
+        if seconds > 0 or (hours == 0 and minutes == 0):
+            # Always include seconds if it's the only component or if non-zero
+            if seconds == int(seconds):
+                result += f"{int(seconds)}S"
+            else:
+                result += f"{seconds:.6f}".rstrip('0').rstrip('.') + "S"
         
-        # Format as DOY
-        year = result_dt.year
-        day_of_year = result_dt.timetuple().tm_yday
-        time_str = result_dt.strftime("%H:%M:%S.%f")
-        return f"{year}-{day_of_year:03d}T{time_str}"
+        if is_negative:
+            result = "-" + result
+        
+        return result
 
 
-def _parse_iso8601(iso_string):
+def _parse_iso8601_timestamp(iso_string):
     """
     Parse an ISO 8601 timestamp string to a datetime object.
     

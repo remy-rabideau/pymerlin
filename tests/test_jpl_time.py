@@ -1,308 +1,166 @@
 import pytest
-from pymerlin.duration import Duration, SECONDS, HOURS, MINUTES
+from pymerlin.duration import Duration, SECONDS, HOURS, MINUTES, MICROSECONDS
 
 
-def test_from_iso8601_basic():
-    """Test basic ISO 8601 parsing"""
-    epoch = "2024-01-01T00:00:00Z"
+def test_parse_iso8601_basic():
+    """Test basic ISO 8601 duration parsing"""
+    # Test hours
+    d = Duration.parse_iso8601("PT1H")
+    assert d.to_number_in(HOURS) == 1.0
     
-    # Test same time (zero duration)
-    duration = Duration.from_iso8601("2024-01-01T00:00:00Z", epoch)
-    assert duration == Duration.ZERO
+    # Test minutes
+    d = Duration.parse_iso8601("PT30M")
+    assert d.to_number_in(MINUTES) == 30.0
     
-    # Test 12 hours later
-    duration = Duration.from_iso8601("2024-01-01T12:00:00Z", epoch)
-    assert duration.to_number_in(HOURS) == 12.0
-    
-    # Test 1 day later
-    duration = Duration.from_iso8601("2024-01-02T00:00:00Z", epoch)
-    assert duration.to_number_in(HOURS) == 24.0
+    # Test seconds
+    d = Duration.parse_iso8601("PT45S")
+    assert d.to_number_in(SECONDS) == 45.0
 
 
-def test_from_iso8601_with_microseconds():
-    """Test ISO 8601 parsing with microsecond precision"""
-    epoch = "2024-01-01T00:00:00.000000Z"
+def test_parse_iso8601_combined():
+    """Test ISO 8601 duration with combined units"""
+    # Hours and minutes
+    d = Duration.parse_iso8601("PT1H30M")
+    assert d.to_number_in(MINUTES) == 90.0
     
-    # Test with microseconds
-    duration = Duration.from_iso8601("2024-01-01T00:00:01.500000Z", epoch)
-    assert duration.to_number_in(SECONDS) == 1.5
+    # Hours, minutes, and seconds
+    d = Duration.parse_iso8601("PT12H30M45S")
+    expected = (12 * 3600) + (30 * 60) + 45
+    assert d.to_number_in(SECONDS) == expected
     
-    # Test with partial microseconds
-    duration = Duration.from_iso8601("2024-01-01T00:00:00.123456Z", epoch)
-    assert abs(duration.to_number_in(SECONDS) - 0.123456) < 1e-6
+    # All components
+    d = Duration.parse_iso8601("P1DT12H30M45S")
+    expected = (1 * 24 * 3600) + (12 * 3600) + (30 * 60) + 45
+    assert d.to_number_in(SECONDS) == expected
 
 
-def test_from_iso8601_with_timezone():
-    """Test ISO 8601 parsing with timezone offsets"""
-    epoch = "2024-01-01T00:00:00+00:00"
+def test_parse_iso8601_fractional_seconds():
+    """Test ISO 8601 duration with fractional seconds"""
+    d = Duration.parse_iso8601("PT45.5S")
+    assert abs(d.to_number_in(SECONDS) - 45.5) < 1e-6
     
-    # Test with explicit UTC
-    duration = Duration.from_iso8601("2024-01-01T12:00:00+00:00", epoch)
-    assert duration.to_number_in(HOURS) == 12.0
-    
-    # Test with different timezone (should convert to UTC)
-    duration = Duration.from_iso8601("2024-01-01T13:00:00+01:00", epoch)
-    assert duration.to_number_in(HOURS) == 12.0
+    d = Duration.parse_iso8601("PT1.123456S")
+    assert abs(d.to_number_in(SECONDS) - 1.123456) < 1e-6
 
 
-def test_from_doy_basic():
-    """Test basic DOY format parsing"""
-    epoch = "2024-001T00:00:00"
+def test_parse_iso8601_days():
+    """Test ISO 8601 duration with days"""
+    d = Duration.parse_iso8601("P1D")
+    assert d.to_number_in(HOURS) == 24.0
     
-    # Test same time (zero duration)
-    duration = Duration.from_doy("2024-001T00:00:00", epoch)
-    assert duration == Duration.ZERO
+    d = Duration.parse_iso8601("P2D")
+    assert d.to_number_in(HOURS) == 48.0
     
-    # Test 1 day later
-    duration = Duration.from_doy("2024-002T00:00:00", epoch)
-    assert duration.to_number_in(HOURS) == 24.0
-    
-    # Test 12 hours later
-    duration = Duration.from_doy("2024-001T12:00:00", epoch)
-    assert duration.to_number_in(HOURS) == 12.0
-
-
-def test_from_doy_with_microseconds():
-    """Test DOY format parsing with microsecond precision"""
-    epoch = "2024-001T00:00:00.000000"
-    
-    # Test with microseconds
-    duration = Duration.from_doy("2024-001T00:00:01.500000", epoch)
-    assert duration.to_number_in(SECONDS) == 1.5
-    
-    # Test with partial microseconds
-    duration = Duration.from_doy("2024-001T00:00:00.123456", epoch)
-    assert abs(duration.to_number_in(SECONDS) - 0.123456) < 1e-6
-
-
-def test_from_doy_leap_year():
-    """Test DOY format with leap year"""
-    epoch = "2024-001T00:00:00"
-    
-    # Day 60 in a leap year is Feb 29
-    duration = Duration.from_doy("2024-060T00:00:00", epoch)
-    assert duration.to_number_in(HOURS) == 59 * 24.0
-    
-    # Day 366 in a leap year is Dec 31
-    duration = Duration.from_doy("2024-366T00:00:00", epoch)
-    assert duration.to_number_in(HOURS) == 365 * 24.0
+    d = Duration.parse_iso8601("P1DT12H")
+    assert d.to_number_in(HOURS) == 36.0
 
 
 def test_to_iso8601_basic():
-    """Test conversion from Duration to ISO 8601"""
-    epoch = "2024-01-01T00:00:00Z"
+    """Test basic Duration to ISO 8601 conversion"""
+    # Hours only
+    d = Duration.of(1, HOURS)
+    assert d.to_iso8601() == "PT1H"
     
-    # Test zero duration
-    duration = Duration.ZERO
-    result = duration.to_iso8601(epoch)
-    assert result == "2024-01-01T00:00:00.000000Z"
+    # Minutes only
+    d = Duration.of(30, MINUTES)
+    assert d.to_iso8601() == "PT30M"
     
-    # Test 12 hours
-    duration = Duration.of(12, HOURS)
-    result = duration.to_iso8601(epoch)
-    assert result == "2024-01-01T12:00:00.000000Z"
-    
-    # Test 1 day
-    duration = Duration.of(24, HOURS)
-    result = duration.to_iso8601(epoch)
-    assert result == "2024-01-02T00:00:00.000000Z"
+    # Seconds only
+    d = Duration.of(45, SECONDS)
+    assert d.to_iso8601() == "PT45S"
 
 
-def test_to_iso8601_with_microseconds():
-    """Test conversion to ISO 8601 with microsecond precision"""
-    epoch = "2024-01-01T00:00:00Z"
+def test_to_iso8601_combined():
+    """Test Duration to ISO 8601 with multiple components"""
+    # Hours and minutes
+    d = Duration.of(1, HOURS).plus(Duration.of(30, MINUTES))
+    assert d.to_iso8601() == "PT1H30M"
     
-    # Test with fractional seconds
-    duration = Duration.from_string("00:00:01.500000")
-    result = duration.to_iso8601(epoch)
-    assert result == "2024-01-01T00:00:01.500000Z"
+    # Hours, minutes, and seconds
+    d = Duration.of(12, HOURS).plus(Duration.of(30, MINUTES)).plus(Duration.of(45, SECONDS))
+    assert d.to_iso8601() == "PT12H30M45S"
 
 
-def test_to_doy_basic():
-    """Test conversion from Duration to DOY format"""
-    epoch = "2024-001T00:00:00"
-    
-    # Test zero duration
-    duration = Duration.ZERO
-    result = duration.to_doy(epoch)
-    assert result == "2024-001T00:00:00.000000"
-    
-    # Test 12 hours
-    duration = Duration.of(12, HOURS)
-    result = duration.to_doy(epoch)
-    assert result == "2024-001T12:00:00.000000"
-    
-    # Test 1 day
-    duration = Duration.of(24, HOURS)
-    result = duration.to_doy(epoch)
-    assert result == "2024-002T00:00:00.000000"
-
-
-def test_to_doy_with_microseconds():
-    """Test conversion to DOY format with microsecond precision"""
-    epoch = "2024-001T00:00:00"
-    
-    # Test with fractional seconds
-    duration = Duration.from_string("00:00:01.500000")
-    result = duration.to_doy(epoch)
-    assert result == "2024-001T00:00:01.500000"
+def test_to_iso8601_fractional():
+    """Test Duration to ISO 8601 with fractional seconds"""
+    d = Duration.of(45, SECONDS).plus(Duration.of(500000, MICROSECONDS))
+    result = d.to_iso8601()
+    assert "PT45.5S" in result or "PT45.500000S" in result
 
 
 def test_roundtrip_iso8601():
-    """Test that ISO 8601 conversions are reversible"""
-    epoch = "2024-01-01T00:00:00Z"
-    test_times = [
-        "2024-01-01T00:00:00Z",
-        "2024-01-01T12:30:45Z",
-        "2024-01-15T08:15:30.123456Z",
-        "2024-12-31T23:59:59.999999Z",
+    """Test roundtrip conversion: ISO 8601 -> Duration -> ISO 8601"""
+    test_cases = [
+        "PT1H",
+        "PT30M",
+        "PT45S",
+        "PT1H30M",
+        "PT12H30M45S",
     ]
     
-    for time_str in test_times:
-        # Convert to Duration and back
-        duration = Duration.from_iso8601(time_str, epoch)
-        result = duration.to_iso8601(epoch)
-        
-        # Parse both and compare
-        duration_original = Duration.from_iso8601(time_str, epoch)
-        duration_result = Duration.from_iso8601(result, epoch)
-        assert duration_original == duration_result
+    for original in test_cases:
+        parsed = Duration.parse_iso8601(original)
+        back = parsed.to_iso8601()
+        # Parse again to compare values (format might differ slightly)
+        reparsed = Duration.parse_iso8601(back)
+        assert parsed == reparsed, f"Roundtrip failed for {original}: {original} -> {back}"
 
 
-def test_roundtrip_doy():
-    """Test that DOY conversions are reversible"""
-    epoch = "2024-001T00:00:00"
-    test_times = [
-        "2024-001T00:00:00",
-        "2024-001T12:30:45",
-        "2024-095T08:15:30.123456",
-        "2024-366T23:59:59.999999",
-    ]
+def test_parse_iso8601_zero():
+    """Test parsing zero duration"""
+    d = Duration.parse_iso8601("PT0S")
+    assert d == Duration.ZERO
+
+
+def test_to_iso8601_zero():
+    """Test converting zero duration to ISO 8601"""
+    result = Duration.ZERO.to_iso8601()
+    assert result == "PT0S"
+
+
+def test_parse_iso8601_large_values():
+    """Test parsing large duration values"""
+    # 100 hours
+    d = Duration.parse_iso8601("PT100H")
+    assert d.to_number_in(HOURS) == 100.0
     
-    for time_str in test_times:
-        # Convert to Duration and back
-        duration = Duration.from_doy(time_str, epoch)
-        result = duration.to_doy(epoch)
-        
-        # Parse both and compare
-        duration_original = Duration.from_doy(time_str, epoch)
-        duration_result = Duration.from_doy(result, epoch)
-        assert duration_original == duration_result
+    # 1000 minutes
+    d = Duration.parse_iso8601("PT1000M")
+    assert d.to_number_in(MINUTES) == 1000.0
 
 
-def test_negative_duration_iso8601():
-    """Test ISO 8601 with times before epoch"""
-    epoch = "2024-01-02T00:00:00Z"
-    
-    # Test time before epoch
-    duration = Duration.from_iso8601("2024-01-01T00:00:00Z", epoch)
-    assert duration.to_number_in(HOURS) == -24.0
-    
-    # Convert back
-    result = duration.to_iso8601(epoch)
-    assert result == "2024-01-01T00:00:00.000000Z"
-
-
-def test_negative_duration_doy():
-    """Test DOY with times before epoch"""
-    epoch = "2024-002T00:00:00"
-    
-    # Test time before epoch
-    duration = Duration.from_doy("2024-001T00:00:00", epoch)
-    assert duration.to_number_in(HOURS) == -24.0
-    
-    # Convert back
-    result = duration.to_doy(epoch)
-    assert result == "2024-001T00:00:00.000000"
-
-
-def test_cross_year_boundary():
-    """Test conversions across year boundaries"""
-    epoch = "2023-365T12:00:00"
-    
-    # 24 hours later should be Jan 1, 2024
-    duration = Duration.of(24, HOURS)
-    result = duration.to_doy(epoch)
-    assert result.startswith("2024-001T12:00:00")
-
-
-def test_invalid_iso8601_format():
+def test_parse_iso8601_invalid_format():
     """Test that invalid ISO 8601 formats raise errors"""
-    epoch = "2024-01-01T00:00:00Z"
+    with pytest.raises(ValueError):
+        Duration.parse_iso8601("12H30M")  # Missing PT prefix
     
     with pytest.raises(ValueError):
-        Duration.from_iso8601("not-a-date", epoch)
+        Duration.parse_iso8601("invalid")  # Not ISO 8601
     
     with pytest.raises(ValueError):
-        Duration.from_iso8601("2024/01/01 12:00:00", epoch)
+        Duration.parse_iso8601("T12H")  # Missing P prefix
 
 
-def test_invalid_doy_format():
-    """Test that invalid DOY formats raise errors"""
-    epoch = "2024-001T00:00:00"
+def test_from_string_still_works():
+    """Test that original from_string method still works"""
+    d = Duration.from_string("12:30:45")
+    assert d.to_number_in(HOURS) == 12.5125
     
-    with pytest.raises(ValueError):
-        Duration.from_doy("not-a-date", epoch)
+    d = Duration.from_string("+01:00:00")
+    assert d.to_number_in(HOURS) == 1.0
     
-    with pytest.raises(ValueError):
-        Duration.from_doy("2024-1T00:00:00", epoch)
+    d = Duration.from_string("-01:00:00")
+    assert d.to_number_in(HOURS) == -1.0
 
 
-def test_iso8601_formats_supported():
-    """Test all supported ISO 8601 format variations"""
-    epoch = "2024-01-01T00:00:00Z"
+def test_iso8601_vs_from_string():
+    """Test that ISO 8601 and from_string produce same results for equivalent durations"""
+    # 12 hours
+    d1 = Duration.parse_iso8601("PT12H")
+    d2 = Duration.from_string("12:00:00")
+    assert d1 == d2
     
-    # UTC with Z suffix (12:30:45 = 12.5125 hours)
-    d1 = Duration.from_iso8601("2024-01-01T12:30:45Z", epoch)
-    assert abs(d1.to_number_in(HOURS) - 12.5125) < 1e-6
-    
-    # With microseconds (12:30:45.123456)
-    d2 = Duration.from_iso8601("2024-01-01T12:30:45.123456Z", epoch)
-    assert abs(d2.to_number_in(SECONDS) - 45045.123456) < 1e-6
-    
-    # With timezone offset (12:30:45 = 12.5125 hours)
-    d3 = Duration.from_iso8601("2024-01-01T12:30:45+00:00", epoch)
-    assert abs(d3.to_number_in(HOURS) - 12.5125) < 1e-6
-    
-    # With microseconds and timezone
-    d4 = Duration.from_iso8601("2024-01-01T12:30:45.123456+00:00", epoch)
-    assert abs(d4.to_number_in(SECONDS) - 45045.123456) < 1e-6
-
-
-def test_doy_format_variations():
-    """Test DOY format with various precision levels"""
-    epoch = "2024-001T00:00:00"
-    
-    # Without microseconds (12:30:45 = 12.5125 hours)
-    d1 = Duration.from_doy("2024-095T12:30:45", epoch)
-    hours = (94 * 24) + 12.5125
-    assert abs(d1.to_number_in(HOURS) - hours) < 1e-6
-    
-    # With microseconds
-    d2 = Duration.from_doy("2024-095T12:30:45.123456", epoch)
-    seconds = (94 * 24 * 3600) + (12 * 3600) + (30 * 60) + 45.123456
-    assert abs(d2.to_number_in(SECONDS) - seconds) < 1e-6
-
-
-def test_mission_planning_scenario():
-    """Test realistic mission planning scenario"""
-    mission_start = "2024-096T12:00:00"
-    
-    # Define mission events
-    events = [
-        (Duration.ZERO, "Launch"),
-        (Duration.of(2, HOURS), "Orbit Insertion"),
-        (Duration.of(6, HOURS) + Duration.of(30, MINUTES), "Deploy Panels"),
-        (Duration.of(24, HOURS), "First Science Pass"),
-    ]
-    
-    # Verify all events can be converted to DOY
-    for duration, name in events:
-        timestamp = duration.to_doy(mission_start)
-        # Verify we can parse it back
-        recovered = Duration.from_doy(timestamp, mission_start)
-        assert recovered == duration
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    # 1.5 hours (90 minutes)
+    d1 = Duration.parse_iso8601("PT90M")
+    d2 = Duration.from_string("01:30:00")
+    assert d1 == d2
