@@ -1,3 +1,7 @@
+from datetime import datetime, timedelta, timezone
+import re
+
+
 class Duration:
     """
     A signed measure of the temporal distance between two instants.
@@ -112,6 +116,67 @@ class Duration:
         return unit.times(scalar)
 
     @staticmethod
+    def parse_iso8601(iso8601_string):
+        """
+        Parse an ISO 8601 duration string.
+        
+        Matches Aerie's Duration.parseISO8601() method.
+        
+        Supports ISO 8601 duration format:
+        - "PT12H30M45S" (12 hours, 30 minutes, 45 seconds)
+        - "PT1H" (1 hour)
+        - "PT30M" (30 minutes)
+        - "PT45.5S" (45.5 seconds)
+        - "P1DT12H" (1 day and 12 hours)
+        
+        Args:
+            iso8601_string: ISO 8601 duration string (e.g., "PT12H30M45S")
+            
+        Returns:
+            Duration representing the parsed time interval
+            
+        Examples:
+            >>> Duration.parse_iso8601("PT12H30M45S")
+            Duration(+12:30:45.000000)
+            >>> Duration.parse_iso8601("PT1H")
+            Duration(+01:00:00.000000)
+        """
+        # Use Python's timedelta parsing via isodate or manual parsing
+        # Python's datetime doesn't have built-in ISO 8601 duration parsing
+        # We'll implement a simple parser for common cases
+        
+        import re
+        
+        # ISO 8601 duration format: P[n]Y[n]M[n]DT[n]H[n]M[n]S
+        pattern = r'P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?'
+        match = re.match(pattern, iso8601_string)
+        
+        if not match:
+            raise ValueError(f"Invalid ISO 8601 duration format: {iso8601_string}")
+        
+        years, months, days, hours, minutes, seconds = match.groups()
+        
+        # Convert to microseconds
+        total_micros = 0
+        
+        if years:
+            # Approximate: 365.25 days per year
+            total_micros += int(years) * 365 * 24 * 3600 * 1_000_000
+        if months:
+            # Approximate: 30 days per month
+            total_micros += int(months) * 30 * 24 * 3600 * 1_000_000
+        if days:
+            total_micros += int(days) * 24 * 3600 * 1_000_000
+        if hours:
+            total_micros += int(hours) * 3600 * 1_000_000
+        if minutes:
+            total_micros += int(minutes) * 60 * 1_000_000
+        if seconds:
+            total_micros += int(float(seconds) * 1_000_000)
+        
+        return Duration.of(total_micros, MICROSECONDS)
+    
+    @staticmethod
     def from_string(duration_string):
         """
         Examples:
@@ -195,6 +260,133 @@ class Duration:
 
     def __add__(self, other):
         return self.plus(other)
+    
+    def to_iso8601(self):
+        """
+        Convert this Duration to an ISO 8601 duration string.
+        
+        Matches Aerie's Duration.toISO8601() method.
+        
+        Returns:
+            ISO 8601 duration string (e.g., "PT12H30M45.123456S")
+            
+        Examples:
+            >>> Duration.of(12, HOURS).to_iso8601()
+            "PT12H"
+            >>> Duration.of(90, MINUTES).to_iso8601()
+            "PT1H30M"
+            >>> Duration.from_string("12:30:45.123456").to_iso8601()
+            "PT12H30M45.123456S"
+        """
+        # Convert microseconds to timedelta and use isoformat
+        td = timedelta(microseconds=self.__micros)
+        
+        # Python's timedelta doesn't have a direct ISO 8601 duration formatter
+        # We'll build it manually
+        total_seconds = td.total_seconds()
+        is_negative = total_seconds < 0
+        
+        if is_negative:
+            total_seconds = -total_seconds
+        
+        hours = int(total_seconds // 3600)
+        remaining = total_seconds - (hours * 3600)
+        minutes = int(remaining // 60)
+        seconds = remaining - (minutes * 60)
+        
+        # Build ISO 8601 duration string
+        result = "PT"
+        if hours > 0:
+            result += f"{hours}H"
+        if minutes > 0:
+            result += f"{minutes}M"
+        if seconds > 0 or (hours == 0 and minutes == 0):
+            # Always include seconds if it's the only component or if non-zero
+            if seconds == int(seconds):
+                result += f"{int(seconds)}S"
+            else:
+                result += f"{seconds:.6f}".rstrip('0').rstrip('.') + "S"
+        
+        if is_negative:
+            result = "-" + result
+        
+        return result
+
+
+def _parse_iso8601_timestamp(iso_string):
+    """
+    Parse an ISO 8601 timestamp string to a datetime object.
+    
+    Supports:
+    - "2024-01-01T12:30:45Z"
+    - "2024-01-01T12:30:45.123456Z"
+    - "2024-01-01T12:30:45+00:00"
+    - "2024-01-01T12:30:45.123456+00:00"
+    """
+    # Remove 'Z' suffix and treat as UTC
+    if iso_string.endswith('Z'):
+        iso_string = iso_string[:-1] + '+00:00'
+    
+    # Try parsing with timezone
+    try:
+        # Python 3.7+ supports fromisoformat with timezone
+        dt = datetime.fromisoformat(iso_string)
+        # Convert to UTC if not already
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+    except (ValueError, AttributeError):
+        # Fallback for older Python or non-standard formats
+        # Try manual parsing
+        match = re.match(
+            r'(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([+-]\d{2}:\d{2})|Z)?',
+            iso_string
+        )
+        if not match:
+            raise ValueError(f"Invalid ISO 8601 format: {iso_string}")
+        
+        year, month, day, hour, minute, second, frac, tz = match.groups()
+        microsecond = 0
+        if frac:
+            # Pad or truncate to 6 digits
+            frac = frac.ljust(6, '0')[:6]
+            microsecond = int(frac)
+        
+        dt = datetime(int(year), int(month), int(day), 
+                     int(hour), int(minute), int(second), 
+                     microsecond, tzinfo=timezone.utc)
+        return dt
+
+
+def _parse_doy(doy_string):
+    """
+    Parse a DOY (Day of Year) timestamp string to a datetime object.
+    
+    Format: "YYYY-DDDTHH:MM:SS.ffffff"
+    Example: "2024-095T12:30:45.123456"
+    """
+    match = re.match(
+        r'(\d{4})-(\d{3})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?',
+        doy_string
+    )
+    if not match:
+        raise ValueError(f"Invalid DOY format: {doy_string}. Expected YYYY-DDDTHH:MM:SS[.ffffff]")
+    
+    year, doy, hour, minute, second, frac = match.groups()
+    microsecond = 0
+    if frac:
+        # Pad or truncate to 6 digits
+        frac = frac.ljust(6, '0')[:6]
+        microsecond = int(frac)
+    
+    # Create datetime for Jan 1 of the year, then add days
+    dt = datetime(int(year), 1, 1, int(hour), int(minute), int(second), 
+                 microsecond, tzinfo=timezone.utc)
+    dt += timedelta(days=int(doy) - 1)
+    
+    return dt
 
 
 def _micros_from_string(duration_string):

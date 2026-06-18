@@ -5,6 +5,12 @@ This example demonstrates SPICE integration with realistic spacecraft activities
 1. Uses spice_resource for continuous tracking (no fake update activities)
 2. Shows real activities like imaging and downlink
 3. Activities read SPICE resources to make operational decisions
+4. Demonstrates ISO 8601 duration format for scheduling (Aerie-compatible)
+
+Key Features:
+    - SPICE epoch set with ISO 8601 timestamp: "2026-04-05T12:00:00Z"
+    - Activities scheduled with ISO 8601 durations: Duration.parse_iso8601("PT2H30M")
+    - Compatible with Aerie's Duration.parseISO8601() format
 
 Requirements:
     - spiceypy (pip install pymerlin[spice])
@@ -15,6 +21,7 @@ from pymerlin import MissionModel, simulate, Schedule, Directive
 from pymerlin.spice import SpiceKernel, spice_resource
 from pymerlin.clock import clock
 from pymerlin.model_actions import delay
+from pymerlin.duration import Duration
 
 
 
@@ -47,8 +54,10 @@ class MarsOrbiter:
         ])
         self.spice.load_kernels()
         
-        # Set mission epoch
-        self.epoch_et = self.spice.utc_to_et("2026-04-05T12:00:00")
+        # Set mission epoch using ISO 8601 timestamp format
+        # SPICE accepts ISO 8601, DOY, and native formats
+        self.epoch_et = self.spice.utc_to_et("2026-04-05T12:00:00Z")  # ISO 8601 format
+        # Alternative: self.epoch_et = self.spice.utc_to_et("2026-095T12:00:00")  # DOY format
         
         # Mission state (managed by activities, not fake updates)
         self.battery_charge = registrar.cell(80.0)  # Percent
@@ -272,28 +281,32 @@ def main():
     print("  1. spice_resource for continuous tracking (no fake activities)")
     print("  2. Real spacecraft activities (imaging, downlink, charging)")
     print("  3. Activities read SPICE resources for operational decisions")
+    print("  4. ISO 8601 duration format for activity scheduling (Aerie-compatible)")
     print("=" * 70)
     print()
     
     # Build a realistic mission schedule
+    # Can use traditional HH:MM:SS format or ISO 8601 duration format (PT12H30M)
     schedule = Schedule.build(
-        # Start with some imaging
+        # Start with some imaging - using traditional format
         ("00:00:00", Directive("take_image", {"target": "Olympus Mons", "exposure_time": 5.0})),
-        ("00:30:00", Directive("take_image", {"target": "Valles Marineris", "exposure_time": 3.0})),
-        ("01:00:00", Directive("take_image", {"target": "Gale Crater", "exposure_time": 4.0})),
         
-        # Downlink the data
-        ("02:00:00", Directive("downlink_data", {})),
+        # Using ISO 8601 duration format (Aerie-compatible)
+        (Duration.parse_iso8601("PT30M"), Directive("take_image", {"target": "Valles Marineris", "exposure_time": 3.0})),
+        (Duration.parse_iso8601("PT1H"), Directive("take_image", {"target": "Gale Crater", "exposure_time": 4.0})),
         
-        # Charge batteries
-        ("03:00:00", Directive("charge_battery", {"duration_minutes": 45.0})),
+        # Downlink the data - ISO 8601 format
+        (Duration.parse_iso8601("PT2H"), Directive("downlink_data", {})),
         
-        # More imaging
+        # Charge batteries - ISO 8601 format
+        (Duration.parse_iso8601("PT3H"), Directive("charge_battery", {"duration_minutes": 45.0})),
+        
+        # More imaging - mixing formats for demonstration
         ("04:30:00", Directive("take_image", {"target": "Jezero Crater", "exposure_time": 5.0})),
-        ("05:00:00", Directive("take_image", {"target": "Hellas Basin", "exposure_time": 3.0})),
+        (Duration.parse_iso8601("PT5H"), Directive("take_image", {"target": "Hellas Basin", "exposure_time": 3.0})),
         
-        # Final downlink
-        ("06:00:00", Directive("downlink_data", {})),
+        # Final downlink - ISO 8601 format
+        (Duration.parse_iso8601("PT6H"), Directive("downlink_data", {})),
     )
     
     try:
@@ -309,6 +322,17 @@ def main():
         print("=" * 70)
         print(f"Activities executed: {len(spans)}")
         print(f"Resources tracked: {len(profiles)}")
+        print()
+        
+        # Show activity timeline with ISO 8601 duration format
+        print("Activity Timeline:")
+        for span in spans:
+            activity_name = span.type
+            start_time = span.start
+            # Show both traditional and ISO 8601 format
+            iso_format = start_time.to_iso8601()
+            print(f"  T+{start_time} ({iso_format}) - {activity_name}")
+        
         print()
         print("Resources:")
         for resource_name in sorted(profiles.keys()):

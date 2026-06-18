@@ -5,7 +5,7 @@ from pymerlin._internal._schedule import Directive
 from pymerlin.clock import clock
 from pymerlin.duration import Duration, SECONDS
 from pymerlin.model_actions import delay
-from pymerlin.spice import SpiceKernel, duration_to_et, et_to_duration, spice_resource, SPICE_AVAILABLE
+from pymerlin.spice import SpiceKernel, duration_to_et, et_to_duration, spice_resource, iso8601_to_et, doy_to_et, SPICE_AVAILABLE
 
 # Skip all tests if SPICE is not installed
 pytestmark = pytest.mark.skipif(not SPICE_AVAILABLE, reason="spiceypy not installed")
@@ -280,3 +280,184 @@ def test_spice_resource_computation_types():
             assert callable(state_fn)
     
     profiles, spans, events = simulate(ValidModel, Schedule.empty(), "00:00:01")
+
+
+def test_spice_iso8601_format(tmp_path):
+    """Test that SpiceKernel.utc_to_et() accepts ISO 8601 format"""
+    # Create minimal leap seconds kernel
+    lsk_path = tmp_path / "naif0012.tls"
+    with open(lsk_path, "w") as f:
+        f.write("""\\begindata
+DELTET/DELTA_T_A = 32.184
+DELTET/K = 1.657D-3
+DELTET/EB = 1.671D-2
+DELTET/M = ( 6.239996 1.99096871D-7 )
+DELTET/DELTA_AT = ( 10, @1972-JAN-1
+                     11, @1972-JUL-1
+                     12, @1973-JAN-1
+                     13, @1974-JAN-1
+                     14, @1975-JAN-1
+                     15, @1976-JAN-1
+                     16, @1977-JAN-1
+                     17, @1978-JAN-1
+                     18, @1979-JAN-1
+                     19, @1980-JAN-1
+                     20, @1981-JUL-1
+                     21, @1982-JUL-1
+                     22, @1983-JUL-1
+                     23, @1985-JUL-1
+                     24, @1988-JAN-1
+                     25, @1990-JAN-1
+                     26, @1991-JAN-1
+                     27, @1992-JUL-1
+                     28, @1993-JUL-1
+                     29, @1994-JUL-1
+                     30, @1996-JAN-1
+                     31, @1997-JUL-1
+                     32, @1999-JAN-1
+                     33, @2006-JAN-1
+                     34, @2009-JAN-1
+                     35, @2012-JUL-1
+                     36, @2015-JUL-1
+                     37, @2017-JAN-1 )
+\\begintext
+""")
+    
+    @MissionModel
+    class TestModel:
+        def __init__(self, registrar):
+            self.spice = SpiceKernel(registrar, kernel_paths=[str(lsk_path)])
+            self.spice.load_kernels()
+    
+    profiles, spans, events = simulate(TestModel, Schedule.empty(), "00:00:01")
+    
+    # Get the SpiceKernel instance from the simulation
+    # Note: This is a simplified test - in real usage, you'd access spice from the model
+    spice_kernel = SpiceKernel(None, kernel_paths=[str(lsk_path)])
+    spice_kernel.load_kernels()
+    
+    # Test ISO 8601 formats
+    et1 = spice_kernel.utc_to_et("2024-01-01T00:00:00Z")
+    et2 = spice_kernel.utc_to_et("2024-01-01T00:00:00+00:00")
+    
+    # Both should give the same result
+    assert abs(et1 - et2) < 0.001  # Within 1ms
+    
+    # Test with microseconds
+    et3 = spice_kernel.utc_to_et("2024-01-01T12:30:45.123456Z")
+    et4 = spice_kernel.utc_to_et("2024-01-01T00:00:00Z")
+    
+    # Difference should be 12:30:45.123456
+    expected_diff = (12 * 3600) + (30 * 60) + 45.123456
+    assert abs((et3 - et4) - expected_diff) < 0.001
+    
+    spice_kernel.unload_kernels()
+
+
+def test_spice_doy_format(tmp_path):
+    """Test that SpiceKernel.utc_to_et() accepts DOY format"""
+    # Create minimal leap seconds kernel
+    lsk_path = tmp_path / "naif0012.tls"
+    with open(lsk_path, "w") as f:
+        f.write("""\\begindata
+DELTET/DELTA_T_A = 32.184
+DELTET/K = 1.657D-3
+DELTET/EB = 1.671D-2
+DELTET/M = ( 6.239996 1.99096871D-7 )
+DELTET/DELTA_AT = ( 10, @1972-JAN-1
+                     11, @1972-JUL-1
+                     12, @1973-JAN-1
+                     13, @1974-JAN-1
+                     14, @1975-JAN-1
+                     15, @1976-JAN-1
+                     16, @1977-JAN-1
+                     17, @1978-JAN-1
+                     18, @1979-JAN-1
+                     19, @1980-JAN-1
+                     20, @1981-JUL-1
+                     21, @1982-JUL-1
+                     22, @1983-JUL-1
+                     23, @1985-JUL-1
+                     24, @1988-JAN-1
+                     25, @1990-JAN-1
+                     26, @1991-JAN-1
+                     27, @1992-JUL-1
+                     28, @1993-JUL-1
+                     29, @1994-JUL-1
+                     30, @1996-JAN-1
+                     31, @1997-JUL-1
+                     32, @1999-JAN-1
+                     33, @2006-JAN-1
+                     34, @2009-JAN-1
+                     35, @2012-JUL-1
+                     36, @2015-JUL-1
+                     37, @2017-JAN-1 )
+\\begintext
+""")
+    
+    spice_kernel = SpiceKernel(None, kernel_paths=[str(lsk_path)])
+    spice_kernel.load_kernels()
+    
+    # Test DOY format (Day 1 = Jan 1, Day 96 = Apr 5 in 2024)
+    et1 = spice_kernel.utc_to_et("2024-001T00:00:00")
+    et2 = spice_kernel.utc_to_et("2024-01-01T00:00:00Z")
+    
+    # Both should give the same result
+    assert abs(et1 - et2) < 0.001
+    
+    # Test Day 96 (April 5, 2024)
+    et_doy = spice_kernel.utc_to_et("2024-096T12:00:00")
+    et_iso = spice_kernel.utc_to_et("2024-04-05T12:00:00Z")
+    
+    # Should be equivalent
+    assert abs(et_doy - et_iso) < 0.001
+    
+    spice_kernel.unload_kernels()
+
+
+def test_iso8601_to_et_helper(tmp_path):
+    """Test iso8601_to_et() helper function"""
+    lsk_path = tmp_path / "naif0012.tls"
+    with open(lsk_path, "w") as f:
+        f.write("""\\begindata
+DELTET/DELTA_T_A = 32.184
+DELTET/K = 1.657D-3
+DELTET/EB = 1.671D-2
+DELTET/M = ( 6.239996 1.99096871D-7 )
+DELTET/DELTA_AT = ( 10, @1972-JAN-1
+                     37, @2017-JAN-1 )
+\\begintext
+""")
+    
+    spice_kernel = SpiceKernel(None, kernel_paths=[str(lsk_path)])
+    spice_kernel.load_kernels()
+    
+    # Test helper function
+    et = iso8601_to_et(spice_kernel, "2024-01-01T00:00:00Z")
+    assert isinstance(et, float)
+    
+    spice_kernel.unload_kernels()
+
+
+def test_doy_to_et_helper(tmp_path):
+    """Test doy_to_et() helper function"""
+    lsk_path = tmp_path / "naif0012.tls"
+    with open(lsk_path, "w") as f:
+        f.write("""\\begindata
+DELTET/DELTA_T_A = 32.184
+DELTET/K = 1.657D-3
+DELTET/EB = 1.671D-2
+DELTET/M = ( 6.239996 1.99096871D-7 )
+DELTET/DELTA_AT = ( 10, @1972-JAN-1
+                     37, @2017-JAN-1 )
+\\begintext
+""")
+    
+    spice_kernel = SpiceKernel(None, kernel_paths=[str(lsk_path)])
+    spice_kernel.load_kernels()
+    
+    # Test helper function
+    et = doy_to_et(spice_kernel, "2024-096T12:00:00")
+    assert isinstance(et, float)
+    
+    spice_kernel.unload_kernels()
