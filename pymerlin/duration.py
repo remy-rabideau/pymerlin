@@ -1,3 +1,7 @@
+from datetime import datetime, timedelta, timezone
+import re
+
+
 class Duration:
     """
     A signed measure of the temporal distance between two instants.
@@ -112,6 +116,68 @@ class Duration:
         return unit.times(scalar)
 
     @staticmethod
+    def from_iso8601(iso_string, epoch_iso):
+        """
+        Create a Duration from an ISO 8601 timestamp relative to an epoch.
+        
+        This method supports JPL/Aerie time formats:
+        - ISO 8601: "2024-01-01T12:30:45.123456Z"
+        - ISO 8601 with timezone: "2024-01-01T12:30:45+00:00"
+        
+        Args:
+            iso_string: ISO 8601 formatted timestamp
+            epoch_iso: ISO 8601 formatted epoch timestamp
+            
+        Returns:
+            Duration representing time elapsed since epoch
+            
+        Examples:
+            >>> epoch = "2024-01-01T00:00:00Z"
+            >>> Duration.from_iso8601("2024-01-01T12:00:00Z", epoch)
+            Duration(+12:00:00.000000)
+        """
+        # Parse ISO strings to datetime objects
+        target_dt = _parse_iso8601(iso_string)
+        epoch_dt = _parse_iso8601(epoch_iso)
+        
+        # Calculate difference in microseconds
+        delta = target_dt - epoch_dt
+        total_micros = int(delta.total_seconds() * 1_000_000)
+        
+        return Duration.of(total_micros, MICROSECONDS)
+    
+    @staticmethod
+    def from_doy(doy_string, epoch_doy):
+        """
+        Create a Duration from a DOY (Day of Year) timestamp relative to an epoch.
+        
+        DOY format is commonly used in JPL/NASA missions:
+        - Format: "YYYY-DDDTHH:MM:SS.ffffff"
+        - Example: "2024-095T12:30:45.123456" (95th day of 2024)
+        
+        Args:
+            doy_string: DOY formatted timestamp
+            epoch_doy: DOY formatted epoch timestamp
+            
+        Returns:
+            Duration representing time elapsed since epoch
+            
+        Examples:
+            >>> epoch = "2024-001T00:00:00"
+            >>> Duration.from_doy("2024-002T00:00:00", epoch)
+            Duration(+24:00:00.000000)
+        """
+        # Parse DOY strings to datetime objects
+        target_dt = _parse_doy(doy_string)
+        epoch_dt = _parse_doy(epoch_doy)
+        
+        # Calculate difference in microseconds
+        delta = target_dt - epoch_dt
+        total_micros = int(delta.total_seconds() * 1_000_000)
+        
+        return Duration.of(total_micros, MICROSECONDS)
+    
+    @staticmethod
     def from_string(duration_string):
         """
         Examples:
@@ -195,6 +261,137 @@ class Duration:
 
     def __add__(self, other):
         return self.plus(other)
+    
+    def to_iso8601(self, epoch_iso):
+        """
+        Convert this Duration to an ISO 8601 timestamp.
+        
+        Args:
+            epoch_iso: ISO 8601 formatted epoch timestamp
+            
+        Returns:
+            ISO 8601 formatted timestamp string
+            
+        Examples:
+            >>> epoch = "2024-01-01T00:00:00Z"
+            >>> duration = Duration.from_string("12:00:00")
+            >>> duration.to_iso8601(epoch)
+            "2024-01-01T12:00:00.000000Z"
+        """
+        # Parse epoch
+        epoch_dt = _parse_iso8601(epoch_iso)
+        
+        # Add duration to epoch
+        delta = timedelta(microseconds=self.__micros)
+        result_dt = epoch_dt + delta
+        
+        # Format as ISO 8601 with microseconds
+        return result_dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    
+    def to_doy(self, epoch_doy):
+        """
+        Convert this Duration to a DOY (Day of Year) timestamp.
+        
+        Args:
+            epoch_doy: DOY formatted epoch timestamp
+            
+        Returns:
+            DOY formatted timestamp string
+            
+        Examples:
+            >>> epoch = "2024-001T00:00:00"
+            >>> duration = Duration.from_string("24:00:00")
+            >>> duration.to_doy(epoch)
+            "2024-002T00:00:00.000000"
+        """
+        # Parse epoch
+        epoch_dt = _parse_doy(epoch_doy)
+        
+        # Add duration to epoch
+        delta = timedelta(microseconds=self.__micros)
+        result_dt = epoch_dt + delta
+        
+        # Format as DOY
+        year = result_dt.year
+        day_of_year = result_dt.timetuple().tm_yday
+        time_str = result_dt.strftime("%H:%M:%S.%f")
+        return f"{year}-{day_of_year:03d}T{time_str}"
+
+
+def _parse_iso8601(iso_string):
+    """
+    Parse an ISO 8601 timestamp string to a datetime object.
+    
+    Supports:
+    - "2024-01-01T12:30:45Z"
+    - "2024-01-01T12:30:45.123456Z"
+    - "2024-01-01T12:30:45+00:00"
+    - "2024-01-01T12:30:45.123456+00:00"
+    """
+    # Remove 'Z' suffix and treat as UTC
+    if iso_string.endswith('Z'):
+        iso_string = iso_string[:-1] + '+00:00'
+    
+    # Try parsing with timezone
+    try:
+        # Python 3.7+ supports fromisoformat with timezone
+        dt = datetime.fromisoformat(iso_string)
+        # Convert to UTC if not already
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+    except (ValueError, AttributeError):
+        # Fallback for older Python or non-standard formats
+        # Try manual parsing
+        match = re.match(
+            r'(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([+-]\d{2}:\d{2})|Z)?',
+            iso_string
+        )
+        if not match:
+            raise ValueError(f"Invalid ISO 8601 format: {iso_string}")
+        
+        year, month, day, hour, minute, second, frac, tz = match.groups()
+        microsecond = 0
+        if frac:
+            # Pad or truncate to 6 digits
+            frac = frac.ljust(6, '0')[:6]
+            microsecond = int(frac)
+        
+        dt = datetime(int(year), int(month), int(day), 
+                     int(hour), int(minute), int(second), 
+                     microsecond, tzinfo=timezone.utc)
+        return dt
+
+
+def _parse_doy(doy_string):
+    """
+    Parse a DOY (Day of Year) timestamp string to a datetime object.
+    
+    Format: "YYYY-DDDTHH:MM:SS.ffffff"
+    Example: "2024-095T12:30:45.123456"
+    """
+    match = re.match(
+        r'(\d{4})-(\d{3})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?',
+        doy_string
+    )
+    if not match:
+        raise ValueError(f"Invalid DOY format: {doy_string}. Expected YYYY-DDDTHH:MM:SS[.ffffff]")
+    
+    year, doy, hour, minute, second, frac = match.groups()
+    microsecond = 0
+    if frac:
+        # Pad or truncate to 6 digits
+        frac = frac.ljust(6, '0')[:6]
+        microsecond = int(frac)
+    
+    # Create datetime for Jan 1 of the year, then add days
+    dt = datetime(int(year), 1, 1, int(hour), int(minute), int(second), 
+                 microsecond, tzinfo=timezone.utc)
+    dt += timedelta(days=int(doy) - 1)
+    
+    return dt
 
 
 def _micros_from_string(duration_string):
