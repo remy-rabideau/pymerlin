@@ -14,6 +14,7 @@ To learn more about Aerie, read the [Aerie Docs](https://nasa-ammos.github.io/ae
 - [x] Conditions on autonomous cells
 - [x] Child tasks
 - [x] Spiceypy
+- [ ] daemon activities
 - [ ] JPL time
 - [ ] pip-installable models
 - [ ] build Aerie-compatible jars and provide docker-compose file with python

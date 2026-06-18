@@ -11,14 +11,14 @@ class Mission:
         registrar.topic("/cell1")
 
 @Mission.ActivityType
-async def activity1(mission):
+def activity1(mission):
     mission.cell1.emit("foo")
     result = mission.cell1.get()
     assert result == "foo", result
-    await delay("00:00:12")
+    delay("00:00:12")
     mission.cell1.emit("bar")
     spawn(activity2(mission))
 
 @Mission.ActivityType
-async def activity2(mission):
-    await wait_until(lambda: True)
+def activity2(mission):
+    wait_until(lambda: True)
