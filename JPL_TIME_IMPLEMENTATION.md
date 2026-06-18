@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the implementation of JPL/Aerie time format support in pymerlin, completing the first step of the `feature/jpl-time` branch.
+This document describes the implementation of JPL/Aerie time format support in pymerlin for the `feature/jpl-time` branch. Steps 1-3 are complete: Duration class extensions, SPICE integration, and comprehensive testing.
 
 ## What Was Implemented
 
@@ -32,10 +32,24 @@ Added methods for NASA/JPL's Day of Year format:
 
 ### 3. Helper Functions
 
-Added internal parsing functions:
+Added internal parsing functions in `duration.py`:
 
 - **`_parse_iso8601(iso_string)`**: Parse ISO 8601 strings to Python datetime objects
 - **`_parse_doy(doy_string)`**: Parse DOY strings to Python datetime objects
+
+### 4. SPICE Integration
+
+Extended `SpiceKernel` class to accept JPL time formats:
+
+- **`SpiceKernel.utc_to_et(utc_string)`**: Now accepts ISO 8601, DOY, and SPICE native formats
+  - Automatically detects format and converts appropriately
+  - ISO 8601 → SPICE calendar format: `"YYYY MON DD HH:MM:SS.ffffff"`
+  - DOY → SPICE DOY format: `"YYYY-DDD::HH:MM:SS.ffffff"`
+  
+Added convenience functions in `spice.py`:
+
+- **`iso8601_to_et(spice_kernel, iso_string)`**: Direct ISO 8601 to ephemeris time conversion
+- **`doy_to_et(spice_kernel, doy_string)`**: Direct DOY to ephemeris time conversion
 
 ## Key Features
 
@@ -104,27 +118,35 @@ for duration, activity in activities:
 
 ## Integration with SPICE
 
-The JPL time format support integrates seamlessly with pymerlin's SPICE module:
+The JPL time format support integrates seamlessly with pymerlin's SPICE module. `SpiceKernel.utc_to_et()` now automatically accepts all time formats:
 
 ```python
-from pymerlin.spice import SpiceKernel
-from pymerlin.duration import Duration
+from pymerlin.spice import SpiceKernel, iso8601_to_et, doy_to_et
+from pymerlin.duration import Duration, HOURS
 
-# Define mission epoch in DOY format
-mission_epoch_doy = "2024-096T12:00:00"
-
-# Convert to SPICE ephemeris time
 spice = SpiceKernel(registrar, kernel_paths=[...])
-epoch_et = spice.utc_to_et("2024-04-05T12:00:00")
+spice.load_kernels()
+
+# All three formats work automatically
+epoch_et_iso = spice.utc_to_et("2024-04-05T12:00:00Z")      # ISO 8601
+epoch_et_doy = spice.utc_to_et("2024-096T12:00:00")         # DOY format
+epoch_et_native = spice.utc_to_et("2024 APR 05 12:00:00")  # SPICE native
+
+# Or use convenience functions
+epoch_et = iso8601_to_et(spice, "2024-04-05T12:00:00Z")
+epoch_et = doy_to_et(spice, "2024-096T12:00:00")
 
 # Work with durations
 t_plus_3h = Duration.of(3, HOURS)
-absolute_time = t_plus_3h.to_doy(mission_epoch_doy)
+absolute_time_doy = t_plus_3h.to_doy("2024-096T12:00:00")
+absolute_time_iso = t_plus_3h.to_iso8601("2024-04-05T12:00:00Z")
 ```
 
 ## Testing
 
-Comprehensive tests have been added in `tests/test_jpl_time.py` covering:
+### Duration Tests (`tests/test_jpl_time.py`)
+
+Comprehensive tests for Duration class JPL time format support:
 
 - Basic ISO 8601 parsing
 - ISO 8601 with microseconds
@@ -137,29 +159,56 @@ Comprehensive tests have been added in `tests/test_jpl_time.py` covering:
 - Cross-year boundaries
 - Invalid format error handling
 
+### SPICE Integration Tests (`tests/test_spice.py`)
+
+Extended SPICE tests to cover JPL time formats:
+
+- `test_spice_iso8601_format()` - ISO 8601 format acceptance in `utc_to_et()`
+- `test_spice_doy_format()` - DOY format acceptance in `utc_to_et()`
+- `test_iso8601_to_et_helper()` - ISO 8601 convenience function
+- `test_doy_to_et_helper()` - DOY convenience function
+
 Run tests with:
 ```bash
 python -m pytest tests/test_jpl_time.py -v
+python -m pytest tests/test_spice.py -v
 ```
 
 ## Files Modified
 
-- **`pymerlin/duration.py`**: Added `from_iso8601()`, `from_doy()`, `to_iso8601()`, `to_doy()` methods and helper functions
+- **`pymerlin/duration.py`**: 
+  - Added `from_iso8601()`, `from_doy()`, `to_iso8601()`, `to_doy()` static/instance methods
+  - Added `_parse_iso8601()` and `_parse_doy()` helper functions
+  - Added imports: `datetime`, `timedelta`, `timezone`, `re`
+
+- **`pymerlin/spice.py`**: 
+  - Extended `SpiceKernel.utc_to_et()` to auto-detect and convert ISO 8601 and DOY formats
+  - Added `_is_iso8601_format()` and `_is_doy_format()` helper methods
+  - Added `iso8601_to_et()` and `doy_to_et()` convenience functions
+  - Updated module docstring with JPL time format examples
+  - Added imports: `re`, `_parse_iso8601`, `_parse_doy` from duration module
+
+- **`tests/test_spice.py`**:
+  - Added 4 new tests for JPL time format support in SPICE integration
+  - Updated imports to include `iso8601_to_et` and `doy_to_et`
 
 ## Files Created
 
-- **`tests/test_jpl_time.py`**: Comprehensive test suite for JPL time formats
-- **`demo/jpl_time_example.py`**: Demonstration of JPL time format usage
+- **`tests/test_jpl_time.py`**: Comprehensive test suite (20+ tests) for JPL time formats
 - **`JPL_TIME_IMPLEMENTATION.md`**: This documentation file
 
-## Next Steps
+## Implementation Status
 
-The remaining implementation steps for the `feature/jpl-time` branch:
+### ✅ Completed
 
-2. **Extend SPICE integration** - Add DOY format support to `SpiceKernel.utc_to_et()`
-3. **Add tests** - Extend SPICE tests to cover new time formats
-4. **Update documentation** - Add JPL time format examples to SPICE guide
-5. **Aerie integration** - Ensure compatibility with Aerie's time representation
+1. **Duration class extensions** - Added ISO 8601 and DOY format parsers and converters
+2. **SPICE integration** - Extended `utc_to_et()` to support ISO 8601 and DOY formats
+3. **Comprehensive testing** - Added 20+ tests for Duration and 4 tests for SPICE integration
+
+### 🔄 Remaining Steps
+
+4. **Update documentation** - Add JPL time format examples to SPICE guide (`docs-src/2_guides/spice.md`)
+5. **Aerie validation** - Verify compatibility with Aerie's time representation (if applicable)
 
 ## Compatibility
 
@@ -186,3 +235,19 @@ The remaining implementation steps for the `feature/jpl-time` branch:
 - DOY format correctly handles leap years (366 days)
 - Day 60 in a leap year is February 29
 - Day 366 in a leap year is December 31
+
+### SPICE Format Conversion
+
+When converting JPL time formats to SPICE:
+
+- **ISO 8601** → SPICE calendar format: `"2024 JAN 01 12:00:00.000000"`
+  - Uses month abbreviations (JAN, FEB, etc.)
+  - Uppercase format required by SPICE
+  
+- **DOY** → SPICE DOY format: `"2024-001::12:00:00.000000"`
+  - Uses `::` delimiter to indicate DOY format
+  - Maintains 3-digit day-of-year with zero padding
+  
+- Format detection uses regex patterns:
+  - DOY: `^\d{4}-\d{3}T` (3 digits after dash)
+  - ISO 8601: `^\d{4}-\d{2}-\d{2}T` (2 digits for month and day)
