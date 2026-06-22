@@ -18,7 +18,7 @@ Requirements:
 """
 
 from pymerlin import MissionModel, simulate, Schedule, Directive
-from pymerlin.spice import SpiceKernel, spice_resource
+from pymerlin.spice import SpiceKernel, spice_resource, duration_to_et
 from pymerlin.clock import clock
 from pymerlin.model_actions import delay
 from pymerlin.duration import Duration
@@ -94,7 +94,6 @@ class MarsOrbiter:
     
     def get_altitude(self):
         """Compute current altitude above Mars surface."""
-        from pymerlin.spice import duration_to_et
         sim_time = self.clock.get()
         et = duration_to_et(sim_time, self.epoch_et)
         pos = self.spice.position("MRO", "MARS", "J2000", et)
@@ -104,7 +103,6 @@ class MarsOrbiter:
     
     def get_earth_distance(self):
         """Compute current distance to Earth."""
-        from pymerlin.spice import duration_to_et
         sim_time = self.clock.get()
         et = duration_to_et(sim_time, self.epoch_et)
         pos = self.spice.position("MRO", "EARTH", "J2000", et)
@@ -112,7 +110,6 @@ class MarsOrbiter:
     
     def get_sun_distance(self):
         """Compute current distance to Sun."""
-        from pymerlin.spice import duration_to_et
         sim_time = self.clock.get()
         et = duration_to_et(sim_time, self.epoch_et)
         pos = self.spice.position("MRO", "SUN", "J2000", et)
