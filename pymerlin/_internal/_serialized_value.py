@@ -1,4 +1,53 @@
-from py4j.java_collections import MapConverter, ListConverter, JavaMap, JavaList
+def _is_graal_gateway(gateway):
+    from pymerlin._internal._graal_gateway import GraalGateway
+    return isinstance(gateway, GraalGateway)
+
+
+def _to_java_map(gateway, py_dict):
+    """Convert a Python dict to a Java Map, using the appropriate bridge."""
+    if _is_graal_gateway(gateway):
+        import java
+        HashMap = java.type("java.util.HashMap")
+        m = HashMap()
+        for k, v in py_dict.items():
+            m.put(k, v)
+        return m
+    else:
+        from py4j.java_collections import MapConverter
+        return MapConverter().convert(py_dict, gateway._gateway_client)
+
+
+def _to_java_list(gateway, py_list):
+    """Convert a Python list to a Java List, using the appropriate bridge."""
+    if _is_graal_gateway(gateway):
+        import java
+        ArrayList = java.type("java.util.ArrayList")
+        lst = ArrayList()
+        for item in py_list:
+            lst.add(item)
+        return lst
+    else:
+        from py4j.java_collections import ListConverter
+        return ListConverter().convert(py_list, gateway._gateway_client)
+
+
+def _is_java_map(gateway, value):
+    if _is_graal_gateway(gateway):
+        import java
+        return isinstance(value, java.type("java.util.Map"))
+    else:
+        from py4j.java_collections import JavaMap
+        return isinstance(value, JavaMap)
+
+
+def _is_java_list(gateway, value):
+    if _is_graal_gateway(gateway):
+        import java
+        return isinstance(value, java.type("java.util.List"))
+    else:
+        from py4j.java_collections import JavaList
+        return isinstance(value, JavaList)
+
 
 def from_serialized_value(gateway, value):
     return value.match(SerializedValueVisitor(gateway))
@@ -21,32 +70,29 @@ class SerializedValueVisitor:
         return str(value)
 
     def onMap(self, value):
-        return MapConverter().convert({k: from_serialized_value(self.gateway, v) for k, v in value.items()}, self.gateway._gateway_client)
+        return {k: from_serialized_value(self.gateway, v) for k, v in value.items()}
 
     def onList(self, value):
-        return ListConverter().convert([from_serialized_value(self.gateway, v) for v in value], self.gateway._gateway_client)
+        return [from_serialized_value(self.gateway, v) for v in value]
 
     class Java:
         implements = ["gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue$Visitor"]
 
 
 def to_serialized_value(gateway, value):
+    SerializedValue = gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue
     if type(value) is str:
-        return gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue.of(value)
+        return SerializedValue.of(value)
     if type(value) is int:
-        return gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue.of(value)
+        return SerializedValue.of(value)
     if type(value) is float:
-        return gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue.of(value)
-    if type(value) is dict or type(value) is JavaMap:
-        return gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue.of(
-            MapConverter().convert({
-                k: to_serialized_value(gateway, v) for k, v in value.items()
-            }, gateway._gateway_client))
-    if type(value) is list or type(value) is JavaList:
-        return gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue.of(
-            ListConverter().convert([
-                to_serialized_value(gateway, v) for v in value
-            ], gateway._gateway_client))
+        return SerializedValue.of(value)
+    if type(value) is dict or _is_java_map(gateway, value):
+        return SerializedValue.of(
+            _to_java_map(gateway, {k: to_serialized_value(gateway, v) for k, v in value.items()}))
+    if type(value) is list or _is_java_list(gateway, value):
+        return SerializedValue.of(
+            _to_java_list(gateway, [to_serialized_value(gateway, v) for v in value]))
     raise NotImplementedError(value)
 
 

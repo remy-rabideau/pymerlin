@@ -5,6 +5,7 @@
 plugins {
     id 'java'
     id 'application'
+    id 'org.graalvm.python' version '25.0.3'
 }
 
 java {
@@ -29,11 +30,21 @@ repositories {
 dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
+    // py4j: only needed for the local simulation gateway (MerlinEntryPoint / py4j bridge)
     implementation 'net.sf.py4j:py4j:0.10.9.7'
 
-    implementation 'gov.nasa.jpl.aerie:merlin-sdk:+'
+    // Merlin interfaces: compileOnly because Aerie provides them at runtime via its own classloader.
+    // Bundling them would break Class identity checks in MissionModelLoader.
+    compileOnly 'gov.nasa.jpl.aerie:merlin-sdk:2.14.0'
+    compileOnly 'gov.nasa.jpl.aerie:merlin-driver:2.14.0'
+
+    // commons-lang3 is used internally (e.g. Pair) and must be bundled.
     implementation 'org.apache.commons:commons-lang3:3.13.0'
-    implementation 'gov.nasa.jpl.aerie:merlin-driver:+'
+
+    // GraalPy embedding — all three artifacts must use the same version.
+    implementation 'org.graalvm.polyglot:polyglot:25.0.3'
+    implementation 'org.graalvm.polyglot:python-community:25.0.3'
+    implementation 'org.graalvm.python:python-embedding:25.0.3'
 
     testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.10.0'
 }
@@ -47,11 +58,39 @@ jar {
         )
     }
     from {
-        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : (it.name.endsWith('.jar') ? zipTree(it) : []) }
     }
 }
 
 application {
     // Define the main class for the application.
     mainClass = 'gov.nasa.ammos.aerie.merlin.python.MerlinEntryPoint'
+}
+
+graalPy {
+    // Python packages to embed in the virtual filesystem.
+    // build_jar() overwrites this block in a generated build script.
+    packages = []
+}
+
+// Produces the Aerie-uploadable mission model JAR.
+// Excludes merlin-sdk/merlin-driver (provided by Aerie at runtime).
+// Includes GraalPy runtime + embedded Python VFS.
+tasks.register('missionModelJar', Jar) {
+    dependsOn(configurations.runtimeClasspath)
+    archiveClassifier = 'mission-model'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    // Bundle everything except the Aerie-provided interfaces
+    from(configurations.runtimeClasspath
+        .filter { !it.name.contains('merlin-sdk') && !it.name.contains('merlin-driver') }
+        .collect { it.isDirectory() ? it : zipTree(it) })
+
+    from sourceSets.main.output
+
+    manifest {
+        attributes(
+            'Mission-Model-Version': version,
+        )
+    }
 }

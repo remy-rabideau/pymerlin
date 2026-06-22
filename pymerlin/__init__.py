@@ -6,6 +6,7 @@ from ._internal._decorators import MissionModel
 from ._internal._framework import simulate, Span, ProfileSegment
 from ._internal._registrar import Registrar
 from ._internal._schedule import Schedule, Directive
+from ._internal._build import build_jar
 from .duration import Duration
 
 
@@ -51,5 +52,6 @@ __all__ = [
     Schedule,
     Directive,
     Duration,
-    checkout
+    checkout,
+    build_jar,
 ]

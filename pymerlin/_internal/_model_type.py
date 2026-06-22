@@ -1,16 +1,16 @@
 import sys
 import warnings
 
-from py4j.java_collections import MapConverter
-
 from pymerlin._internal import _globals
 from pymerlin._internal._cell_type import CellType
 from pymerlin._internal._context import _context
 from pymerlin._internal._directive_type import DirectiveType
 from pymerlin._internal._globals import models_by_id
+from pymerlin._internal._input_type import InputType
 from pymerlin._internal._output_type import OutputType
 from pymerlin._internal._registrar import Registrar
 from pymerlin._internal._resource import Resource
+from pymerlin._internal._serialized_value import _to_java_map
 from pymerlin._internal._task_factory import TaskFactory
 from pymerlin._internal._threaded_task import ThreadedTaskHost
 
@@ -66,20 +66,19 @@ class ModelType:
         return id(model)
 
     def getDirectiveTypes(self):
-        return MapConverter().convert(
-            {
-                activity_type[0].name: DirectiveType(
-                    self.gateway,
-                    activity_type[0],  # TaskDefinition
-                    activity_type[1],  # input_topic
-                    activity_type[2],  # output_topic
-                    self)                # model type
-                for activity_type in self.activity_types
-            },
-            self.gateway._gateway_client)
+        py_dict = {
+            activity_type[0].name: DirectiveType(
+                self.gateway,
+                activity_type[0],  # TaskDefinition
+                activity_type[1],  # input_topic
+                activity_type[2],  # output_topic
+                self)                # model type
+            for activity_type in self.activity_types
+        }
+        return _to_java_map(self.gateway, py_dict)
 
     def getConfigurationType(self):
-        pass
+        return InputType()
 
     def toString(self):
         return str(self)

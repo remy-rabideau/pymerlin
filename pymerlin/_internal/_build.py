@@ -1,0 +1,181 @@
+"""
+build_jar: packages a pymerlin mission model as an Aerie-uploadable fat JAR.
+
+The produced JAR:
+  - Implements gov.nasa.jpl.aerie.merlin.protocol.model.MerlinPlugin via
+    ServiceLoader (META-INF/services/...).
+  - Bundles GraalPy 25.0.3 so Python runs in-process inside the Aerie JVM.
+  - Bundles the pymerlin package and the user's model source tree.
+  - Excludes merlin-sdk / merlin-driver (provided by Aerie at runtime).
+
+Usage:
+    from pymerlin import build_jar
+    from mymodel import Mission
+
+    build_jar(Mission, "mission_model.jar")
+
+    # With extra pip packages your model imports:
+    build_jar(Mission, "mission_model.jar", packages=["spiceypy==6.0.0"])
+"""
+
+import inspect
+import shutil
+import subprocess
+import textwrap
+from pathlib import Path
+
+
+def build_jar(model_class, output_path, *, packages=None):
+    """
+    Build an Aerie-uploadable mission model JAR from a pymerlin @MissionModel class.
+
+    Parameters
+    ----------
+    model_class : type
+        The Python class decorated with @MissionModel.
+    output_path : str or Path
+        Destination path for the produced JAR file.
+    packages : list[str], optional
+        Additional pip package specs to embed (e.g. ["spiceypy==6.0.0"]).
+        The pymerlin package itself is always included from source.
+    """
+    packages = packages or []
+    output_path = Path(output_path).resolve()
+
+    java_project_root = Path(__file__).parent.parent.parent / "java"
+    if not java_project_root.is_dir():
+        raise FileNotFoundError(
+            f"Java project not found at {java_project_root}. "
+            "Make sure you are running from a pymerlin source checkout."
+        )
+
+    model_module = _infer_module_name(model_class)
+    model_class_name = model_class.__name__
+    model_source_file = Path(inspect.getfile(model_class)).resolve()
+
+    print(f"[pymerlin] Building JAR for {model_class_name} (module: {model_module})")
+    print(f"[pymerlin] Output: {output_path}")
+
+    vfs_src_dir = java_project_root / "pymerlin" / "src" / "main" / "resources" / \
+                  "org.graalvm.python.vfs" / "src"
+    vfs_src_dir.mkdir(parents=True, exist_ok=True)
+
+    _stage_pymerlin_package(vfs_src_dir)
+    _stage_model_source(model_source_file, vfs_src_dir)
+
+    props_file = java_project_root / "pymerlin" / "src" / "main" / "resources" / "pymerlin.properties"
+    _write_properties(props_file, model_module, model_class_name)
+
+    build_gradle = java_project_root / "pymerlin" / "build.gradle"
+    _patch_graalpy_packages(build_gradle, packages)
+
+    _run_gradle(java_project_root)
+
+    produced_jar = _find_produced_jar(java_project_root / "pymerlin" / "build" / "libs")
+    shutil.copy2(produced_jar, output_path)
+    print(f"[pymerlin] JAR ready: {output_path}")
+
+
+def _infer_module_name(model_class):
+    """
+    Derive the Python module name to import at runtime.
+    Uses __module__ if it looks like a real dotted module path,
+    otherwise falls back to the stem of the source file.
+    """
+    mod = getattr(model_class, "__module__", None)
+    if mod and mod != "__main__":
+        return mod
+    source_file = inspect.getfile(model_class)
+    return Path(source_file).stem
+
+
+def _stage_pymerlin_package(vfs_src_dir):
+    """Copy the pymerlin package into the GraalPy VFS source directory."""
+    pymerlin_src = Path(__file__).parent.parent  # pymerlin/ package root
+    dest = vfs_src_dir / "pymerlin"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(pymerlin_src, dest, ignore=shutil.ignore_patterns(
+        "__pycache__", "*.pyc", "_internal/jars"
+    ))
+    print(f"[pymerlin] Staged pymerlin package -> {dest}")
+
+
+def _stage_model_source(model_source_file, vfs_src_dir):
+    """
+    Copy the user's model source file (and any sibling .py files in the same
+    directory) into the GraalPy VFS source directory.
+
+    If the model file is inside a proper package (has __init__.py), the whole
+    package tree is copied. Otherwise just the single file is copied.
+    """
+    model_dir = model_source_file.parent
+    if (model_dir / "__init__.py").exists():
+        # It's a package — find the top-level package root
+        root = model_dir
+        while (root.parent / "__init__.py").exists():
+            root = root.parent
+        dest = vfs_src_dir / root.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(root, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        print(f"[pymerlin] Staged model package {root.name} -> {dest}")
+    else:
+        dest = vfs_src_dir / model_source_file.name
+        shutil.copy2(model_source_file, dest)
+        print(f"[pymerlin] Staged model file {model_source_file.name} -> {dest}")
+
+
+def _write_properties(props_file, module_name, class_name):
+    """Write the baked-in module/class properties into the JAR resources."""
+    props_file.write_text(textwrap.dedent(f"""\
+        # Generated by pymerlin.build_jar() — do not edit manually.
+        pymerlin.model.module={module_name}
+        pymerlin.model.class={class_name}
+    """))
+    print(f"[pymerlin] Wrote {props_file}")
+
+
+def _patch_graalpy_packages(build_gradle, packages):
+    """
+    Replace the packages = [...] list inside the graalPy { } block
+    so the GraalPy Gradle plugin installs the right pip dependencies.
+    """
+    text = build_gradle.read_text()
+    packages_str = ", ".join(f'"{p}"' for p in packages)
+    import re
+    patched = re.sub(
+        r'(graalPy\s*\{[^}]*packages\s*=\s*)\[[^\]]*\]',
+        rf'\g<1>[{packages_str}]',
+        text,
+        flags=re.DOTALL,
+    )
+    build_gradle.write_text(patched)
+
+
+def _run_gradle(java_project_root):
+    """Run ./gradlew missionModelJar in the java/ directory."""
+    gradlew = java_project_root / "gradlew"
+    if not gradlew.exists():
+        raise FileNotFoundError(f"Gradle wrapper not found at {gradlew}")
+    result = subprocess.run(
+        [str(gradlew), ":pymerlin:missionModelJar", "--info"],
+        cwd=java_project_root,
+        capture_output=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Gradle build failed with exit code {result.returncode}. "
+            "Check the output above for details."
+        )
+
+
+def _find_produced_jar(libs_dir):
+    """Locate the mission-model-classified JAR in the Gradle build output."""
+    jars = list(libs_dir.glob("*-mission-model.jar"))
+    if not jars:
+        raise FileNotFoundError(
+            f"No mission-model JAR found in {libs_dir}. "
+            "Did the Gradle missionModelJar task run successfully?"
+        )
+    return max(jars, key=lambda p: p.stat().st_mtime)
