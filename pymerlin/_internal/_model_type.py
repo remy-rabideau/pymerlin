@@ -79,7 +79,11 @@ class ModelType:
             self.gateway._gateway_client)
 
     def getConfigurationType(self):
-        pass
+        from pymerlin._internal._input_type import InputType
+        return InputType(self.gateway)
+
+    def getSubsystems(self):
+        return self.gateway.jvm.java.util.Collections.emptyList()
 
     def toString(self):
         return str(self)

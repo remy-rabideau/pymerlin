@@ -6,7 +6,9 @@ class OutputType:
         self.gateway = gateway
 
     def getSchema(self):
-        pass  # TODO return ValueSchema
+        return self.gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema.ofStruct(
+            self.gateway.jvm.java.util.Map.of()
+        )
 
     def serialize(self, value):
         return to_serialized_value(self.gateway, value)

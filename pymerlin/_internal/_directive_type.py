@@ -13,10 +13,17 @@ class DirectiveType:
         self.model_type = model_type
 
     def getInputType(self):
-        return InputType()
+        return InputType(self.gateway)
 
     def getOutputType(self):
-        return None
+        from pymerlin._internal._output_type import OutputType
+        return OutputType(self.gateway)
+
+    def getSubsystem(self):
+        return self.gateway.jvm.java.util.Optional.empty()
+
+    def getDescription(self):
+        return self.gateway.jvm.java.util.Optional.of("")
 
     def getTaskFactory(self, model_id, args):
         return self.activity.get_task_factory(models_by_id[model_id][0], args, self.gateway, self.model_type)
