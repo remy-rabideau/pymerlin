@@ -12,11 +12,11 @@ class Mission:
 
 @Mission.ActivityType
 def activity1(mission):
-    mission.cell1.emit("foo")
+    mission.cell1.set("foo")
     result = mission.cell1.get()
     assert result == "foo", result
     delay("00:00:12")
-    mission.cell1.emit("bar")
+    mission.cell1.set("bar")
     spawn(activity2(mission))
 
 @Mission.ActivityType
