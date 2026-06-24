@@ -42,8 +42,8 @@ Repository = "https://github.com/mattdailis/pymerlin"
 "Bug Tracker" = "https://github.com/mattdailis/pymerlin/issues"
 Changelog = "https://github.com/mattdailis/pymerlin/blob/main/CHANGELOG.md"
 
-#[project.scripts]
-#spam-cli = "spam:main_cli"
+[project.scripts]
+pymerlin = "pymerlin._internal._cli:main"
 #
 #[project.gui-scripts]
 #spam-gui = "spam:main_gui"
