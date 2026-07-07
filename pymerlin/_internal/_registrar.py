@@ -90,7 +90,7 @@ class CellRef(Gettable):
 
     def emit(self, event):
         if not callable(event):
-            raise Exception("Expecting effect to be callable")
+            event = set_value(event)
         _globals.effects_by_id[_globals.next_effect_id] = event
         _globals._current_context[0].emit(_globals.next_effect_id, self.topic)
         _globals.next_effect_id += 1

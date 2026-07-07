@@ -1,9 +1,11 @@
 package gov.nasa.ammos.aerie.merlin.python.codegen;
 
 import py4j.GatewayServer;
+import py4j.CallbackClient;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +46,10 @@ public class PyMerlinRuntime {
         return bridge;
     }
 
+    public ClassLoader getClassLoader() {
+        return PyMerlinRuntime.class.getClassLoader();
+    }
+
     public void shutdown() {
         if (pythonProcess != null && pythonProcess.isAlive()) {
             pythonProcess.destroy();
@@ -67,22 +73,41 @@ public class PyMerlinRuntime {
             }
             
             int gatewayPort = findFreePort();
+            int callbackPort = findFreePort();
 
             CountDownLatch ready = new CountDownLatch(1);
             PyMerlinBridgeHolder holder = new PyMerlinBridgeHolder(ready);
 
-            GatewayServer gatewayServer = new GatewayServer.GatewayServerBuilder()
-                    .javaPort(gatewayPort)
-                    .entryPoint(holder)
-                    .build();
-            gatewayServer.start();
+            // py4j resolves the Python-proxy interface via the connection thread's context
+            // classloader, and those threads inherit it from whoever starts the gateway.
+            // Aerie loads the mission model in an isolated URLClassLoader, so point py4j at
+            // that loader (the one that loaded this class) instead of the system loader.
+            final Thread current = Thread.currentThread();
+            final ClassLoader previousCcl = current.getContextClassLoader();
+            current.setContextClassLoader(PyMerlinRuntime.class.getClassLoader());
+            final GatewayServer gatewayServer;
+            try {
+                // Configure the CallbackClient to connect to Python's callback server
+                // on a known port, so Java knows where to call back to Python proxies.
+                CallbackClient callbackClient = new CallbackClient(
+                        callbackPort, InetAddress.getLoopbackAddress());
+                gatewayServer = new GatewayServer.GatewayServerBuilder()
+                        .javaPort(gatewayPort)
+                        .callbackClient(callbackClient)
+                        .entryPoint(holder)
+                        .build();
+                gatewayServer.start();
+            } finally {
+                current.setContextClassLoader(previousCcl);
+            }
 
-            System.out.println("[PyMerlinRuntime] Starting Python subprocess on gateway port " + gatewayPort);
+            System.out.println("[PyMerlinRuntime] Starting Python subprocess on gateway port " + gatewayPort + ", callback port " + callbackPort);
 
             ProcessBuilder pb = new ProcessBuilder(
                     "python", "-m", "pymerlin._internal._runtime_server",
                     "--model", actualModelRef,
-                    "--gateway-port", String.valueOf(gatewayPort)
+                    "--gateway-port", String.valueOf(gatewayPort),
+                    "--callback-port", String.valueOf(callbackPort)
             );
             pb.redirectErrorStream(true);
             pb.inheritIO();
@@ -135,8 +160,33 @@ public class PyMerlinRuntime {
         }
     }
 
+    public interface CellEmitter {
+        void emit(String value);
+    }
+
     public interface PyMerlinBridge {
-        Object runActivity(String activityName, java.util.Map<String, Object> args);
+        TaskHandle startActivity(String activityName, java.util.Map<String, Object> args);
+        Object getResource(String resourceName);
+        void registerCellEmitter(String resourceName, CellEmitter emitter);
+        // CellEmitter is passed as a Java lambda; Python receives it as a py4j callback proxy
+    }
+
+    public interface SpawnInfo {
+        String getName();
+    }
+
+    public interface PendingEmit {
+        String getResourceName();
+        String getValue();
+    }
+
+    public interface TaskHandle {
+        void step();
+        String getStatus();
+        long getDelayMicros();
+        SpawnInfo getSpawnedHandle();
+        String getPendingEmitResource();
+        String getPendingEmitValue();
     }
 
     public static class PyMerlinBridgeHolder {

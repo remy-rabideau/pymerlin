@@ -27,6 +27,7 @@ def MissionModel(cls):
             activity_definition = func
         elif callable(func):
             activity_definition = TaskDefinition(func.__name__, lambda *args, **kwargs: activity_wrapper(TaskDefinition("inner", func), args, kwargs, *get_topics(activity_definition)))
+            activity_definition.raw_func = func
         else:
             raise ValueError("Cannot decorate " + repr(func) + " with @ActivityType")
         if activity_definition.name in cls.activity_types:
@@ -78,7 +79,12 @@ class TaskDefinition:
     def make_instance(self, *args, **kwargs) -> TaskInstance:
         # inspect.getfullargspec(self.inner)
         # return self.inner.__call__(*args, **kwargs)
-        return TaskInstance(lambda: self.inner.__call__(*args, **kwargs))
+        instance = TaskInstance(lambda: self.inner.__call__(*args, **kwargs))
+        if hasattr(self, 'raw_func'):
+            instance.raw_func = self.raw_func
+            instance.raw_args = args
+            instance.raw_kwargs = kwargs
+        return instance
         # , f"{self.name}({', '.join(f'{k}={v}' for k, v in kwargs.items())})"
 
     def get_task_factory(self, model, args, gateway, model_type):

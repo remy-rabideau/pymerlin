@@ -6,10 +6,20 @@ the Aerie ModelType interface, with one ActivityMapper per activity type.
 """
 
 import inspect
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Look for .env in the pymerlin package root
+    env_path = Path(__file__).parent.parent.parent / ".env"
+    load_dotenv(dotenv_path=env_path)
+except ImportError:
+    pass  # python-dotenv not installed, will use defaults
 
 
 def generate_mission_model_jar(model_class, model_name: str, model_version: str, output_jar: str, model_ref: str = None):
@@ -142,7 +152,65 @@ def _generate_model_type_class(pkg_dir: Path, model_name: str, activity_types: d
     """Generate the ModelType implementation."""
     
     model_ref_literal = model_ref if model_ref else "model.py:Mission"
-    
+
+    # Build field declarations for resource topics (one Topic<String> per resource)
+    resource_fields = []
+    resource_registrations = []
+    for resource_name in resources.keys():
+        safe_name = resource_name.replace("/", "_").replace("-", "_").lstrip("_")
+        resource_fields.append(
+            f'    private final gov.nasa.jpl.aerie.merlin.protocol.driver.Topic<String> topic_{safe_name} = new gov.nasa.jpl.aerie.merlin.protocol.driver.Topic<>();'
+        )
+        resource_registrations.append(f'''
+        // Allocate a cell for {resource_name} backed by topic_{safe_name}.
+        // State is String[] of length 1 (mutable holder); effect is the new String value.
+        final String[] init_{safe_name} = new String[]{{
+            (runtimeFinal != null) ? (String) runtimeFinal.getBridge().getResource("{resource_name}") : ""
+        }};
+        final gov.nasa.jpl.aerie.merlin.protocol.driver.CellId<String[]> cell_{safe_name} =
+            builder.allocate(
+                init_{safe_name},
+                new gov.nasa.jpl.aerie.merlin.protocol.model.CellType<String, String[]>() {{
+                    @Override public gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<String> getEffectType() {{
+                        return new gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<String>() {{
+                            @Override public String empty() {{ return null; }}
+                            @Override public String sequentially(String prefix, String suffix) {{ return suffix != null ? suffix : prefix; }}
+                            @Override public String concurrently(String left, String right) {{ return right != null ? right : left; }}
+                        }};
+                    }}
+                    @Override public void apply(String[] state, String effect) {{ if (effect != null) state[0] = effect; }}
+                    @Override public String[] duplicate(String[] state) {{ return new String[]{{state[0]}}; }}
+                }},
+                event -> event,
+                this.topic_{safe_name});
+        builder.resource("{resource_name}", new gov.nasa.jpl.aerie.merlin.protocol.model.Resource<String>() {{
+            @Override public String getType() {{ return "discrete"; }}
+            @Override public gov.nasa.jpl.aerie.merlin.protocol.model.OutputType<String> getOutputType() {{
+                return new gov.nasa.jpl.aerie.merlin.protocol.model.OutputType<String>() {{
+                    @Override public gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema getSchema() {{
+                        return gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema.STRING;
+                    }}
+                    @Override public SerializedValue serialize(String value) {{
+                        return SerializedValue.of(value);
+                    }}
+                }};
+            }}
+            @Override public String getDynamics(gov.nasa.jpl.aerie.merlin.protocol.driver.Querier querier) {{
+                return querier.getState(cell_{safe_name})[0];
+            }}
+        }});
+        // Register a CellEmitter so Python can push new values to Aerie via ModelActions.emit.
+        // Guarded by null check (Python unavailable during resource extraction on merlin server).
+        if (runtimeFinal != null) {{
+            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.CellEmitter emitter_{safe_name} = value ->
+                gov.nasa.jpl.aerie.merlin.framework.ModelActions.emit(value, this.topic_{safe_name});
+            runtimeFinal.getBridge().registerCellEmitter("{resource_name}", emitter_{safe_name});
+            gov.nasa.ammos.aerie.pymerlin.generated.ActivityTypes.cellEmitters.put("{resource_name}", emitter_{safe_name});
+        }}''')
+
+    resource_field_block = "\n".join(resource_fields)
+    resource_block = "\n".join(resource_registrations)
+
     code = f'''package gov.nasa.ammos.aerie.pymerlin.generated;
 
 import gov.nasa.jpl.aerie.merlin.framework.ActivityMapper;
@@ -157,7 +225,8 @@ import java.util.List;
 import java.util.Map;
 
 public final class GeneratedModelType implements ModelType<Unit, Unit> {{
-    
+{resource_field_block}
+
     @Override
     public Map<String, ActivityMapper<Unit, ?, ?>> getDirectiveTypes() {{
         return ActivityTypes.directiveTypes;
@@ -200,11 +269,21 @@ public final class GeneratedModelType implements ModelType<Unit, Unit> {{
     
     @Override
     public Unit instantiate(Instant planStart, Unit configuration, Initializer builder) {{
-        // Set model reference for PyMerlinRuntime to use
         System.setProperty("pymerlin.model.ref", "{model_ref_literal}");
-        
+
         ActivityTypes.registerTopics(builder);
-        // TODO: Initialize Python runtime and register resources
+
+        gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime runtime = null;
+        try {{
+            runtime = gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.getInstance(
+                System.getProperty("pymerlin.model.ref", "{model_ref_literal}"));
+        }} catch (Exception e) {{
+            System.err.println("[PyMerlin] Python runtime unavailable during instantiate (resource extraction?): " + e.getMessage());
+        }}
+
+        final gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime runtimeFinal = runtime;
+
+{resource_block}
         return Unit.UNIT;
     }}
 }}
@@ -230,6 +309,8 @@ def _generate_activity_types_class(pkg_dir: Path, activity_types: dict):
 
 import gov.nasa.jpl.aerie.merlin.framework.ActivityMapper;
 import gov.nasa.jpl.aerie.merlin.protocol.driver.Initializer;
+import gov.nasa.jpl.aerie.merlin.protocol.model.TaskFactory;
+import gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Unit;
 
 import java.util.Map;
@@ -243,6 +324,21 @@ public final class ActivityTypes {{
     
     public static void registerTopics(Initializer initializer) {{
         directiveTypes.forEach((name, mapper) -> registerDirectiveType(initializer, name, mapper));
+    }}
+
+    public static final java.util.Map<String, gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.CellEmitter> cellEmitters =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static gov.nasa.jpl.aerie.merlin.protocol.model.TaskFactory<?> getTaskFactory(String name) {{
+        ActivityMapper<Unit, ?, ?> mapper = directiveTypes.get(name);
+        if (mapper == null) return null;
+        return getTaskFactoryTyped(mapper);
+    }}
+
+    @SuppressWarnings("unchecked")
+    private static <I, O> gov.nasa.jpl.aerie.merlin.protocol.model.TaskFactory<O> getTaskFactoryTyped(
+            ActivityMapper<Unit, I, O> mapper) {{
+        return mapper.getTaskFactory(Unit.UNIT, (I) new java.util.HashMap<String, gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue>());
     }}
     
     private static <Input, Output> void registerDirectiveType(
@@ -335,21 +431,31 @@ public final class {class_name} implements ActivityMapper<Unit, Map<String, Seri
     public TaskFactory<Unit> getTaskFactory(Unit model, Map<String, SerializedValue> activity) {{
         return ModelActions.threaded(() -> {{
             ModelActions.emit(activity, this.inputTopic);
-            
-            // Execute Python activity via subprocess bridge
-            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime runtime = 
+
+            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime runtime =
                 gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.getInstance(
                     System.getProperty("pymerlin.model.ref", "model.py:Mission")
                 );
-            
-            // Convert SerializedValue args to plain Java objects for py4j
+
             Map<String, Object> pyArgs = new HashMap<>();
             for (Map.Entry<String, SerializedValue> entry : activity.entrySet()) {{
                 pyArgs.put(entry.getKey(), deserializeValue(entry.getValue()));
             }}
-            
-            runtime.getBridge().runActivity("{activity_name}", pyArgs);
-            
+
+            // Set classloader so py4j resolves TaskHandle via the mission model URLClassLoader
+            Thread t = Thread.currentThread();
+            ClassLoader prev = t.getContextClassLoader();
+            t.setContextClassLoader(runtime.getClassLoader());
+            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.TaskHandle handle;
+            try {{
+                handle = runtime.getBridge().startActivity("{activity_name}", pyArgs);
+            }} finally {{
+                t.setContextClassLoader(prev);
+            }}
+
+            // Drive the Python activity to completion, honouring each delay() and spawn().
+            driveHandle(handle, gov.nasa.ammos.aerie.pymerlin.generated.ActivityTypes.cellEmitters);
+
             ModelActions.emit(Unit.UNIT, this.outputTopic);
             return Unit.UNIT;
         }});
@@ -359,6 +465,66 @@ public final class {class_name} implements ActivityMapper<Unit, Map<String, Seri
         // Simple deserialization for basic types - just pass through for now
         // TODO: Properly deserialize to Python-compatible types
         return sv;
+    }}
+
+    private static void driveHandle(
+            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.TaskHandle h,
+            java.util.Map<String, gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.CellEmitter> emitters) {{
+        drainEmits(h, emitters);
+        spawnChildren(h);
+        while (!"completed".equals(h.getStatus())) {{
+            if ("delayed".equals(h.getStatus())) {{
+                long micros = h.getDelayMicros();
+                ModelActions.delay(
+                    gov.nasa.jpl.aerie.merlin.protocol.types.Duration.of(
+                        micros,
+                        gov.nasa.jpl.aerie.merlin.protocol.types.Duration.MICROSECONDS));
+            }}
+            h.step();
+            drainEmits(h, emitters);
+            spawnChildren(h);
+        }}
+    }}
+
+    private static void drainEmits(
+            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.TaskHandle h,
+            java.util.Map<String, gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.CellEmitter> emitters) {{
+        String resourceName;
+        while ((resourceName = h.getPendingEmitResource()) != null) {{
+            String value = h.getPendingEmitValue();
+            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.CellEmitter emitter = emitters.get(resourceName);
+            if (emitter != null) {{
+                emitter.emit(value);
+            }}
+        }}
+    }}
+
+    @SuppressWarnings("unchecked")
+    private static void spawnChildren(gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.TaskHandle parent) {{
+        ClassLoader mcl = gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.class.getClassLoader();
+        Thread ct = Thread.currentThread();
+        ClassLoader prev = ct.getContextClassLoader();
+        // Keep CCL set for the entire drain loop: SpawnInfo is a py4j proxy and
+        // needs the mission model URLClassLoader for interface resolution.
+        ct.setContextClassLoader(mcl);
+        try {{
+            gov.nasa.ammos.aerie.merlin.python.codegen.PyMerlinRuntime.SpawnInfo info;
+            while ((info = parent.getSpawnedHandle()) != null) {{
+                final String childName = info.getName();
+                System.out.println("[SpawnChildren] Spawning child activity: " + childName);
+                // Look up the child's mapper so getTaskFactory emits to its input/output topics,
+                // which is what makes Aerie record the span as a named simulated activity.
+                gov.nasa.jpl.aerie.merlin.protocol.model.TaskFactory<?> childTask =
+                    gov.nasa.ammos.aerie.pymerlin.generated.ActivityTypes.getTaskFactory(childName);
+                if (childTask == null) {{
+                    System.err.println("[SpawnChildren] No mapper found for: " + childName);
+                    continue;
+                }}
+                ModelActions.spawnWithSpan(childTask);
+            }}
+        }} finally {{
+            ct.setContextClassLoader(prev);
+        }}
     }}
     
     public final class InputMapper implements InputType<Map<String, SerializedValue>> {{
@@ -449,16 +615,51 @@ def _package_jar(build_dir: str, output_jar: str, model_name: str, model_version
         shutil.copy(model_file, models_dir / model_file.name)
     
     # Extract dependency JARs into classes directory to create fat JAR
-    plandev_base = Path.home() / "Desktop" / "plandev"
-    pymerlin_base = Path.home() / "Desktop" / "pymerlin"
-    dependency_jars = [
-        plandev_base / "merlin-sdk" / "build" / "libs" / "merlin-sdk.jar",
-        plandev_base / "merlin-framework" / "build" / "libs" / "merlin-framework.jar",
-        plandev_base / "merlin-driver" / "build" / "libs" / "merlin-driver.jar",
-        plandev_base / "contrib" / "build" / "libs" / "contrib.jar",
-        Path("/tmp/pymerlin-codegen.jar"),
-        pymerlin_base / "venv" / "share" / "py4j" / "py4j0.10.9.7.jar",
-    ]
+    # Use environment variables with same fallback logic as _get_merlin_sdk_classpath
+    plandev_env = os.getenv("PLANDEV_PATH")
+    if plandev_env:
+        possible_plandev_locations = [Path(plandev_env).expanduser()]
+    else:
+        possible_plandev_locations = [
+            Path.home() / "Desktop" / "pymerlin" / "plandev",
+            Path.home() / "Desktop" / "plandev",
+            Path(__file__).parent.parent.parent.parent / "plandev",
+        ]
+    
+    plandev_base = None
+    for location in possible_plandev_locations:
+        if location.exists() and (location / "merlin-sdk").exists():
+            plandev_base = location
+            break
+    
+    dependency_jars = []
+    if plandev_base:
+        dependency_jars.extend([
+            plandev_base / "merlin-sdk" / "build" / "libs" / "merlin-sdk.jar",
+            plandev_base / "merlin-framework" / "build" / "libs" / "merlin-framework.jar",
+            plandev_base / "merlin-driver" / "build" / "libs" / "merlin-driver.jar",
+            plandev_base / "contrib" / "build" / "libs" / "contrib.jar",
+        ])
+    
+    codegen_jar_path = os.getenv("PYMERLIN_CODEGEN_JAR", "/tmp/pymerlin-codegen.jar")
+    dependency_jars.append(Path(codegen_jar_path).expanduser())
+    
+    # Find py4j JAR
+    venv_path = os.getenv("PYMERLIN_VENV")
+    if venv_path:
+        possible_py4j_locations = [Path(venv_path).expanduser() / "share" / "py4j"]
+    else:
+        possible_py4j_locations = [
+            Path(__file__).parent.parent.parent.parent / "venv" / "share" / "py4j",
+            Path.home() / "Desktop" / "pymerlin" / "pymerlin" / "venv" / "share" / "py4j",
+        ]
+    
+    for py4j_dir in possible_py4j_locations:
+        if py4j_dir.exists():
+            py4j_jars = list(py4j_dir.glob("py4j*.jar"))
+            if py4j_jars:
+                dependency_jars.append(py4j_jars[0])
+                break
     
     for jar_path in dependency_jars:
         if jar_path.exists():
@@ -476,8 +677,27 @@ def _package_jar(build_dir: str, output_jar: str, model_name: str, model_version
 
 def _get_merlin_sdk_classpath():
     """Get classpath for merlin-sdk and dependencies."""
-    # Try to find plandev's built JARs
-    plandev_base = Path.home() / "Desktop" / "plandev"
+    # Try environment variable first, then fall back to common locations
+    plandev_env = os.getenv("PLANDEV_PATH")
+    if plandev_env:
+        possible_plandev_locations = [Path(plandev_env).expanduser()]
+    else:
+        possible_plandev_locations = [
+            Path.home() / "Desktop" / "pymerlin" / "plandev",
+            Path.home() / "Desktop" / "plandev",
+            Path(__file__).parent.parent.parent.parent / "plandev",
+        ]
+    
+    plandev_base = None
+    for location in possible_plandev_locations:
+        if location.exists() and (location / "merlin-sdk").exists():
+            plandev_base = location
+            break
+    
+    if not plandev_base:
+        raise FileNotFoundError(
+            f"Cannot find plandev directory. Set PLANDEV_PATH in .env or searched: {[str(p) for p in possible_plandev_locations]}"
+        )
     
     jars = []
     for jar_name in ["merlin-sdk.jar", "merlin-framework.jar", "merlin-driver.jar", "contrib.jar"]:
@@ -492,19 +712,31 @@ def _get_merlin_sdk_classpath():
             jars.append(str(jar_path))
     
     # Add pymerlin-codegen JAR
-    pymerlin_codegen_jar = Path("/tmp/pymerlin-codegen.jar")
+    codegen_jar_path = os.getenv("PYMERLIN_CODEGEN_JAR", "/tmp/pymerlin-codegen.jar")
+    pymerlin_codegen_jar = Path(codegen_jar_path).expanduser()
     if pymerlin_codegen_jar.exists():
         jars.append(str(pymerlin_codegen_jar))
     
-    # Add py4j JAR
-    pymerlin_base = Path.home() / "Desktop" / "pymerlin"
-    py4j_jar = pymerlin_base / "venv" / "share" / "py4j" / "py4j0.10.9.7.jar"
-    if py4j_jar.exists():
-        jars.append(str(py4j_jar))
+    # Add py4j JAR - check environment variable first
+    venv_path = os.getenv("PYMERLIN_VENV")
+    if venv_path:
+        possible_py4j_locations = [Path(venv_path).expanduser() / "share" / "py4j"]
+    else:
+        possible_py4j_locations = [
+            Path(__file__).parent.parent.parent.parent / "venv" / "share" / "py4j",
+            Path.home() / "Desktop" / "pymerlin" / "pymerlin" / "venv" / "share" / "py4j",
+        ]
+    
+    for py4j_dir in possible_py4j_locations:
+        if py4j_dir.exists():
+            py4j_jars = list(py4j_dir.glob("py4j*.jar"))
+            if py4j_jars:
+                jars.append(str(py4j_jars[0]))
+                break
     
     if not jars:
         raise FileNotFoundError(
-            "Cannot find merlin JARs. Build plandev first: cd ~/Desktop/plandev && ./gradlew build"
+            f"Cannot find merlin JARs. Build plandev first in one of: {[str(p) for p in possible_plandev_locations]}"
         )
     
     return ":".join(jars)

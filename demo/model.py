@@ -15,7 +15,7 @@ def activity1(mission):
     mission.cell1.emit("foo")
     result = mission.cell1.get()
     assert result == "foo", result
-    delay("00:00:12")
+    delay("05:00:00")
     mission.cell1.emit("bar")
     spawn(activity2(mission))
 
