@@ -339,3 +339,8 @@ spawner → _spawn_queue.put(SpawnInfo("activity2", {}))
   `build-jar` through upload to Aerie and simulation.
 - **Single model instance per JVM.** `PyMerlinRuntime` is a singleton; running multiple
   simulations in the same JVM would share one Python subprocess.
+- **Cell emit queue is tied to the most recently started activity.** `_current_emit_queue[0]`
+  is a single shared holder; if two activities run concurrently, the second `startActivity` call
+  overwrites it and the first activity's subsequent emits go to the wrong queue.
+- **Spawn arguments are not forwarded.** `spawnChildren` calls `getTaskFactory(Unit.UNIT, new HashMap<>())`
+  with an empty args map; any arguments passed to the spawned activity in Python are currently ignored.
