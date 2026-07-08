@@ -1,0 +1,43 @@
+plugins {
+    id 'java'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+def plandevPath = System.getenv('PLANDEV_PATH') ?: "${rootDir}/../../plandev"
+
+repositories {
+    mavenCentral()
+    flatDir {
+        dirs "${plandevPath}/merlin-sdk/build/libs",
+             "${plandevPath}/merlin-framework/build/libs",
+             "${plandevPath}/contrib/build/libs"
+    }
+}
+
+dependencies {
+    // merlin-sdk is provided by Aerie's classloader at runtime — do not bundle
+    compileOnly name: 'merlin-sdk'
+    // merlin-framework is NOT in the worker runtime classpath — must be bundled
+    implementation name: 'merlin-framework'
+    compileOnly name: 'contrib'
+    // gson is not provided by Aerie, so bundle it
+    implementation 'com.google.code.gson:gson:2.11.0'
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes(
+            'Implementation-Title': 'pymerlin-shim',
+        )
+    }
+    // Only include shim classes + bundled deps (gson); NOT the compileOnly Aerie JARs
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+}

@@ -90,19 +90,18 @@ class CellRef(Gettable):
 
     def emit(self, event):
         if not callable(event):
-            raise Exception("Expecting effect to be callable")
-        _globals.effects_by_id[_globals.next_effect_id] = event
-        _globals._current_context[0].emit(_globals.next_effect_id, self.topic)
-        _globals.next_effect_id += 1
+            event = set_value(event)
+        new_val = event(_globals.cell_values_by_id[self.id])
+        _globals.cell_values_by_id[self.id] = new_val
 
     def set(self, new_value):
         self.emit(set_value(new_value))
 
     def add(self, addend):
-        self.emit(add_number(addend))
+        self.emit(lambda x: x + addend)
 
     def _get(self):
-        return _globals.cell_values_by_id[_globals._current_context[0].get(self.id)]
+        return _globals.cell_values_by_id[self.id]
 
     def __iadd__(self, other):
         self.emit(lambda x: x + other)
