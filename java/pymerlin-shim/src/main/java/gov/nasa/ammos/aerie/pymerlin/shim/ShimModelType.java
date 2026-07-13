@@ -52,7 +52,8 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     // --- per-resource cell bookkeeping ---
     private record ResourceCell(
         Topic<String> topic,
-        CellId<String[]> cellId
+        CellId<String[]> cellId,
+        String valueType   // "float", "int", "bool", or "str"
     ) {}
 
     private final Map<String, ResourceCell> resourceCells = new HashMap<>();
@@ -173,15 +174,20 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
                     JsonObject valResp = proto.roundtrip(valReq);
                     String initialValue = valResp.has("value") ? valResp.get("value").getAsString() : "";
 
+                    JsonObject resMeta = resources.getAsJsonObject(resName);
+                    String vtype = (resMeta != null && resMeta.has("value_type"))
+                        ? resMeta.get("value_type").getAsString() : "str";
+
                     Topic<String> topic = new Topic<>();
                     CellId<String[]> cellId = allocateStringCell(builder, initialValue, topic);
-                    resourceCells.put(resName, new ResourceCell(topic, cellId));
+                    resourceCells.put(resName, new ResourceCell(topic, cellId, vtype));
 
                     final String capturedName = resName;
                     final CellId<String[]> capturedCell = cellId;
+                    final String capturedVtype = vtype;
                     builder.resource(capturedName, new Resource<String>() {
                         @Override public String getType() { return "discrete"; }
-                        @Override public OutputType<String> getOutputType() { return stringOutputType(); }
+                        @Override public OutputType<String> getOutputType() { return typedOutputType(capturedVtype); }
                         @Override public String getDynamics(gov.nasa.jpl.aerie.merlin.protocol.driver.Querier q) {
                             return q.getState(capturedCell)[0];
                         }
@@ -331,10 +337,10 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         String actId = "act-" + activityCounter.incrementAndGet();
         Protocol proto = pythonProcess.protocol();
 
-        // Serialize args to plain strings for Python
+        // Serialize args to native JSON types so Python receives the correct types
         JsonObject argsJson = new JsonObject();
         for (Map.Entry<String, SerializedValue> e : args.entrySet()) {
-            argsJson.addProperty(e.getKey(), serializedValueToString(e.getValue()));
+            argsJson.add(e.getKey(), serializedValueToJson(e.getValue()));
         }
 
         JsonObject startMsg = new JsonObject();
@@ -403,28 +409,20 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
                 }
 
                 case "wait_until" -> {
-                    // Structured condition: immediately satisfied (Condition.TRUE) as a placeholder;
-                    // real polling is handled by Aerie's cell change detection.
-                    // For now we use the opaque path to let Python re-evaluate each tick.
                     waitUntil(Condition.TRUE);
                     JsonObject resume = Protocol.obj("op", "resume", "id", actId);
                     response = proto.roundtrip(resume);
                 }
 
                 case "wait_until_opaque" -> {
-                    // Python re-evaluates the condition each time we resume
                     JsonObject resume = Protocol.obj("op", "resume", "id", actId);
                     response = proto.roundtrip(resume);
-                    // If Python is still waiting it will send wait_until_opaque again;
-                    // we loop and it gets handled next iteration.
-                    // Insert a small delay to avoid busy-spinning in simulation time.
                     if ("wait_until_opaque".equals(response.get("op").getAsString())) {
                         delay(Duration.of(1, Duration.MICROSECONDS));
                     }
                 }
 
                 case "running" -> {
-                    // Python yielded but isn't suspended — resume immediately
                     JsonObject resume = Protocol.obj("op", "resume", "id", actId);
                     response = proto.roundtrip(resume);
                 }
@@ -506,32 +504,69 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         });
     }
 
+    private static SerializedValue coerceToSchema(SerializedValue val, ValueSchema schema) {
+        String raw = serializedValueToString(val);
+        if (schema == ValueSchema.REAL) {
+            try { return SerializedValue.of(Double.parseDouble(raw)); }
+            catch (NumberFormatException e) { return val; }
+        } else if (schema == ValueSchema.INT) {
+            try { return SerializedValue.of(Long.parseLong(raw)); }
+            catch (NumberFormatException e) {
+                try { return SerializedValue.of((long) Double.parseDouble(raw)); }
+                catch (NumberFormatException e2) { return val; }
+            }
+        } else if (schema == ValueSchema.BOOLEAN) {
+            return SerializedValue.of(Boolean.parseBoolean(raw));
+        }
+        return val; // STRING and others pass through unchanged
+    }
+
+    private static com.google.gson.JsonElement serializedValueToJson(SerializedValue sv) {
+        return sv.match(new SerializedValue.Visitor<com.google.gson.JsonElement>() {
+            @Override public com.google.gson.JsonElement onNull()             { return com.google.gson.JsonNull.INSTANCE; }
+            @Override public com.google.gson.JsonElement onBoolean(boolean v) { return new com.google.gson.JsonPrimitive(v); }
+            @Override public com.google.gson.JsonElement onNumeric(java.math.BigDecimal v) { return new com.google.gson.JsonPrimitive(v); }
+            @Override public com.google.gson.JsonElement onString(String v)   { return new com.google.gson.JsonPrimitive(v); }
+            @Override public com.google.gson.JsonElement onMap(Map<String, SerializedValue> m) {
+                com.google.gson.JsonObject obj = new com.google.gson.JsonObject();
+                for (var entry : m.entrySet()) obj.add(entry.getKey(), serializedValueToJson(entry.getValue()));
+                return obj;
+            }
+            @Override public com.google.gson.JsonElement onList(List<SerializedValue> l) {
+                com.google.gson.JsonArray arr = new com.google.gson.JsonArray();
+                for (var item : l) arr.add(serializedValueToJson(item));
+                return arr;
+            }
+        });
+    }
+
     private InputType<Map<String, SerializedValue>> activityInputType(String activityName) {
-        List<ParamInfo> params = activityParams.getOrDefault(activityName, List.of());
         return new InputType<>() {
+            private List<ParamInfo> params() {
+                return activityParams.getOrDefault(activityName, List.of());
+            }
+
             @Override
             public List<InputType.Parameter> getParameters() {
                 List<InputType.Parameter> result = new ArrayList<>();
-                for (ParamInfo p : params) result.add(new InputType.Parameter(p.name(), p.schema()));
+                for (ParamInfo p : params()) result.add(new InputType.Parameter(p.name(), p.schema()));
                 return result;
             }
 
             @Override
             public List<String> getRequiredParameters() {
                 List<String> result = new ArrayList<>();
-                for (ParamInfo p : params) if (p.required()) result.add(p.name());
+                for (ParamInfo p : params()) if (p.required()) result.add(p.name());
                 return result;
             }
 
             @Override
             public Map<String, SerializedValue> instantiate(Map<String, SerializedValue> args) {
                 Map<String, SerializedValue> merged = new LinkedHashMap<>();
-                for (ParamInfo p : params) {
-                    if (args.containsKey(p.name())) {
-                        merged.put(p.name(), args.get(p.name()));
-                    } else if (p.defaultValue() != null) {
-                        merged.put(p.name(), p.defaultValue());
-                    }
+                for (ParamInfo p : params()) {
+                    SerializedValue val = args.containsKey(p.name()) ? args.get(p.name())
+                                       : p.defaultValue();
+                    if (val != null) merged.put(p.name(), coerceToSchema(val, p.schema()));
                 }
                 // pass through any extra keys the caller provided
                 for (Map.Entry<String, SerializedValue> e : args.entrySet()) {
@@ -608,6 +643,35 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         return new OutputType<>() {
             @Override public ValueSchema getSchema()             { return ValueSchema.STRING; }
             @Override public SerializedValue serialize(String v) { return SerializedValue.of(v); }
+        };
+    }
+
+    private static OutputType<String> typedOutputType(String vtype) {
+        return switch (vtype) {
+            case "float" -> new OutputType<>() {
+                @Override public ValueSchema getSchema() { return ValueSchema.REAL; }
+                @Override public SerializedValue serialize(String v) {
+                    try { return SerializedValue.of(Double.parseDouble(v)); }
+                    catch (NumberFormatException e) { return SerializedValue.of(0.0); }
+                }
+            };
+            case "int" -> new OutputType<>() {
+                @Override public ValueSchema getSchema() { return ValueSchema.INT; }
+                @Override public SerializedValue serialize(String v) {
+                    try { return SerializedValue.of(Long.parseLong(v)); }
+                    catch (NumberFormatException e) {
+                        try { return SerializedValue.of((long) Double.parseDouble(v)); }
+                        catch (NumberFormatException e2) { return SerializedValue.of(0L); }
+                    }
+                }
+            };
+            case "bool" -> new OutputType<>() {
+                @Override public ValueSchema getSchema() { return ValueSchema.BOOLEAN; }
+                @Override public SerializedValue serialize(String v) {
+                    return SerializedValue.of(Boolean.parseBoolean(v));
+                }
+            };
+            default -> stringOutputType();
         };
     }
 }

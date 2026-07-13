@@ -48,10 +48,28 @@ def _load_model_class(model_ref: str):
         raise ValueError(f"model_ref must be 'path/to/file.py:ClassName', got: {model_ref!r}")
     file_path, class_name = model_ref.rsplit(":", 1)
     file_path = os.path.abspath(file_path)
-    spec = importlib.util.spec_from_file_location("_pymerlin_user_model", file_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, os.path.dirname(file_path))
-    spec.loader.exec_module(module)
+    pkg_dir = os.path.dirname(file_path)
+    pkg_init = os.path.join(pkg_dir, "__init__.py")
+    module_stem = os.path.splitext(os.path.basename(file_path))[0]
+
+    if os.path.exists(pkg_init):
+        # Model is part of a package — load as a proper package so relative imports work.
+        pkg_name = os.path.basename(pkg_dir)
+        parent_dir = os.path.dirname(pkg_dir)
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        # Import the package first so the module can do relative imports.
+        import importlib
+        pkg = importlib.import_module(pkg_name)
+        module = importlib.import_module(f"{pkg_name}.{module_stem}")
+    else:
+        # Standalone file — load directly.
+        if pkg_dir not in sys.path:
+            sys.path.insert(0, pkg_dir)
+        spec = importlib.util.spec_from_file_location("_pymerlin_user_model", file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
     return getattr(module, class_name)
 
 
@@ -59,18 +77,19 @@ def _load_model_class(model_ref: str):
 # Model introspection helpers
 # ---------------------------------------------------------------------------
 
-def _python_type_name(annotation) -> str:
-    if annotation is inspect.Parameter.empty or annotation is Any:
-        return "any"
-    if annotation is int:
-        return "int"
-    if annotation is float:
-        return "float"
-    if annotation is str:
-        return "str"
-    if annotation is bool:
-        return "bool"
-    return "any"
+def _python_type_name(annotation, default=inspect.Parameter.empty) -> str:
+    if annotation is not inspect.Parameter.empty and annotation is not Any:
+        if annotation is int:   return "int"
+        if annotation is float: return "float"
+        if annotation is str:   return "str"
+        if annotation is bool:  return "bool"
+    # Fall back to inferring from the default value
+    if default is not inspect.Parameter.empty and default is not None:
+        if isinstance(default, bool):  return "bool"
+        if isinstance(default, int):   return "int"
+        if isinstance(default, float): return "float"
+        if isinstance(default, str):   return "str"
+    return "str"
 
 
 def _describe_activity_types(model_class) -> dict:
@@ -85,7 +104,7 @@ def _describe_activity_types(model_class) -> dict:
             if param_name == "mission":
                 continue
             params[param_name] = {
-                "type": _python_type_name(param.annotation),
+                "type": _python_type_name(param.annotation, param.default),
                 "required": param.default is inspect.Parameter.empty,
                 "default": None if param.default is inspect.Parameter.empty else param.default,
             }

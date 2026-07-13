@@ -61,16 +61,24 @@ def _package(model_ref: str, output_jar: str, bundle_model: bool = True):
         print(f"[pymerlin] ERROR: model file not found: {model_file}", file=sys.stderr)
         sys.exit(1)
 
+    pkg_dir = model_file.parent
+    is_package = (pkg_dir / "__init__.py").exists()
+
     # The model ref stored in the JAR uses the bundled path if we bundle,
     # otherwise the absolute path on the host.
     if bundle_model:
-        jar_model_ref = f"pymerlin_models/{model_file.name}:{class_name}"
+        if is_package:
+            jar_model_ref = f"pymerlin_models/{pkg_dir.name}/{model_file.name}:{class_name}"
+        else:
+            jar_model_ref = f"pymerlin_models/{model_file.name}:{class_name}"
     else:
         jar_model_ref = f"{model_file}:{class_name}"
 
     print(f"[pymerlin] Packaging model: {model_ref}")
     print(f"[pymerlin] Shim JAR:        {_SHIM_JAR}")
     print(f"[pymerlin] Output:          {output_jar}")
+    if is_package and bundle_model:
+        print(f"[pymerlin] Package dir:     {pkg_dir}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_jar = Path(tmpdir) / "output.jar"
@@ -91,10 +99,16 @@ def _package(model_ref: str, output_jar: str, bundle_model: bool = True):
                 else:
                     dst.writestr(item, data)
 
-            # Bundle the Python model file
-            if bundle_model and model_file.exists():
-                dst.write(model_file, f"pymerlin_models/{model_file.name}")
-                print(f"[pymerlin] Bundled:         {model_file.name}")
+            if bundle_model:
+                if is_package:
+                    # Bundle the entire package directory
+                    for py_file in sorted(pkg_dir.rglob("*.py")):
+                        arc_name = f"pymerlin_models/{pkg_dir.name}/{py_file.relative_to(pkg_dir)}"
+                        dst.write(py_file, arc_name)
+                    print(f"[pymerlin] Bundled package: {pkg_dir.name}/")
+                else:
+                    dst.write(model_file, f"pymerlin_models/{model_file.name}")
+                    print(f"[pymerlin] Bundled:         {model_file.name}")
 
         shutil.copy(tmp_jar, output_jar)
 
