@@ -23,7 +23,9 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -57,8 +59,19 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     private final Map<String, Topic<Map<String, SerializedValue>>> inputTopics  = new HashMap<>();
     private final Map<String, Topic<Unit>>                         outputTopics = new HashMap<>();
 
+    // --- per-parameter metadata ---
+    private record ParamInfo(
+        String name,
+        ValueSchema schema,
+        boolean required,
+        SerializedValue defaultValue
+    ) {}
+
     // Activity names populated either by instantiate() or by a one-shot query in getDirectiveTypes().
     private volatile Set<String> activityNames = null;
+
+    // Per-activity ordered parameter metadata, populated alongside activityNames.
+    private final Map<String, List<ParamInfo>> activityParams = new HashMap<>();
 
     private final AtomicLong activityCounter = new AtomicLong(0);
 
@@ -88,7 +101,12 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
                 JsonObject resp = proc.protocol().roundtrip(Protocol.obj("op", "get_activity_types"));
                 JsonObject types = resp.getAsJsonObject("types");
                 Set<String> names = new java.util.LinkedHashSet<>();
-                if (types != null) types.keySet().forEach(names::add);
+                if (types != null) {
+                    for (String name : types.keySet()) {
+                        names.add(name);
+                        activityParams.put(name, parseParams(types.getAsJsonObject(name)));
+                    }
+                }
                 activityNames = names;
             } finally {
                 proc.destroy();
@@ -128,6 +146,7 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
             if (types != null) {
                 for (String name : types.keySet()) {
                     names.add(name);
+                    activityParams.put(name, parseParams(types.getAsJsonObject(name)));
                     Topic<Map<String, SerializedValue>> inputTopic  = new Topic<>();
                     Topic<Unit>                         outputTopic = new Topic<>();
                     inputTopics.put(name, inputTopic);
@@ -211,29 +230,68 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
     /**
      * If the model ref points to a bundled resource (pymerlin_models/...), extract
-     * the file to a temp directory and return a ref pointing at the extracted path.
+     * the file (or entire package directory) to a temp directory and return a ref
+     * pointing at the extracted path.
+     *
+     * Single-file:  pymerlin_models/model.py:ClassName
+     * Package dir:  pymerlin_models/mypkg/model.py:ClassName
      */
     private static String extractIfBundled(String ref) throws IOException {
         if (!ref.contains(":")) return ref;
         String[] parts = ref.split(":", 2);
-        String resourcePath = parts[0];
+        String resourcePath = parts[0];   // e.g. pymerlin_models/mypkg/model.py
         String className    = parts[1];
 
+        // Check whether the resource is actually bundled in our JAR.
         URL resource = ShimModelType.class.getClassLoader().getResource(resourcePath);
         if (resource == null) {
             // Not bundled — treat as a filesystem path
             return ref;
         }
 
-        // Extract to a temp file
         Path tmpDir = Files.createTempDirectory("pymerlin-model-");
-        String fileName = Path.of(resourcePath).getFileName().toString();
-        Path dest = tmpDir.resolve(fileName);
-        try (InputStream is = resource.openStream()) {
-            Files.copy(is, dest);
+
+        // Determine if this is a package (resourcePath has >2 segments, i.e. pymerlin_models/<pkg>/<file>)
+        Path rp = Path.of(resourcePath);
+        boolean isPackage = rp.getNameCount() >= 3; // pymerlin_models / pkg / file.py
+
+        if (isPackage) {
+            // Extract every resource under pymerlin_models/<pkg>/ from the JAR.
+            String pkgPrefix = rp.getParent().toString().replace('\\', '/') + "/";
+            String pkgName   = rp.getParent().getFileName().toString();
+            Path pkgDest     = tmpDir.resolve(pkgName);
+            Files.createDirectories(pkgDest);
+
+            // Walk the JAR entries via the jar: URL protocol.
+            URL jarUrl = ShimModelType.class.getProtectionDomain().getCodeSource().getLocation();
+            java.net.JarURLConnection conn = (java.net.JarURLConnection) new URL("jar:" + jarUrl.toExternalForm() + "!/").openConnection();
+            try (java.util.jar.JarFile jar = conn.getJarFile()) {
+                java.util.Enumeration<java.util.jar.JarEntry> entries = jar.entries();
+                while (entries.hasMoreElements()) {
+                    java.util.jar.JarEntry entry = entries.nextElement();
+                    String name = entry.getName();
+                    if (!name.startsWith(pkgPrefix) || entry.isDirectory()) continue;
+                    String relative = name.substring(pkgPrefix.length()); // e.g. "model.py" or "sub/foo.py"
+                    Path dest = pkgDest.resolve(relative);
+                    Files.createDirectories(dest.getParent());
+                    try (InputStream is = jar.getInputStream(entry)) {
+                        Files.copy(is, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+            }
+            Path modelFile = pkgDest.resolve(rp.getFileName().toString());
+            System.out.println("[PyMerlin] Extracted bundled package to: " + pkgDest);
+            return modelFile.toAbsolutePath() + ":" + className;
+        } else {
+            // Single file: extract just that one resource.
+            String fileName = rp.getFileName().toString();
+            Path dest = tmpDir.resolve(fileName);
+            try (InputStream is = resource.openStream()) {
+                Files.copy(is, dest);
+            }
+            System.out.println("[PyMerlin] Extracted bundled model to: " + dest);
+            return dest.toAbsolutePath() + ":" + className;
         }
-        System.out.println("[PyMerlin] Extracted bundled model to: " + dest);
-        return dest.toAbsolutePath() + ":" + className;
     }
 
     // -----------------------------------------------------------------
@@ -248,7 +306,7 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
             result.put(name, new DirectiveType<>() {
                 @Override
                 public InputType<Map<String, SerializedValue>> getInputType() {
-                    return passthroughInputType();
+                    return activityInputType(activityName);
                 }
 
                 @Override
@@ -448,14 +506,88 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         });
     }
 
-    private static InputType<Map<String, SerializedValue>> passthroughInputType() {
+    private InputType<Map<String, SerializedValue>> activityInputType(String activityName) {
+        List<ParamInfo> params = activityParams.getOrDefault(activityName, List.of());
         return new InputType<>() {
-            @Override public List<InputType.Parameter> getParameters()     { return List.of(); }
-            @Override public List<String> getRequiredParameters()          { return List.of(); }
-            @Override public Map<String, SerializedValue> instantiate(Map<String, SerializedValue> args) { return args; }
-            @Override public Map<String, SerializedValue> getArguments(Map<String, SerializedValue> v)   { return v; }
-            @Override public List<InputType.ValidationNotice> getValidationFailures(Map<String, SerializedValue> v) { return List.of(); }
+            @Override
+            public List<InputType.Parameter> getParameters() {
+                List<InputType.Parameter> result = new ArrayList<>();
+                for (ParamInfo p : params) result.add(new InputType.Parameter(p.name(), p.schema()));
+                return result;
+            }
+
+            @Override
+            public List<String> getRequiredParameters() {
+                List<String> result = new ArrayList<>();
+                for (ParamInfo p : params) if (p.required()) result.add(p.name());
+                return result;
+            }
+
+            @Override
+            public Map<String, SerializedValue> instantiate(Map<String, SerializedValue> args) {
+                Map<String, SerializedValue> merged = new LinkedHashMap<>();
+                for (ParamInfo p : params) {
+                    if (args.containsKey(p.name())) {
+                        merged.put(p.name(), args.get(p.name()));
+                    } else if (p.defaultValue() != null) {
+                        merged.put(p.name(), p.defaultValue());
+                    }
+                }
+                // pass through any extra keys the caller provided
+                for (Map.Entry<String, SerializedValue> e : args.entrySet()) {
+                    merged.putIfAbsent(e.getKey(), e.getValue());
+                }
+                return merged;
+            }
+
+            @Override
+            public Map<String, SerializedValue> getArguments(Map<String, SerializedValue> v) { return v; }
+
+            @Override
+            public List<InputType.ValidationNotice> getValidationFailures(Map<String, SerializedValue> v) { return List.of(); }
         };
+    }
+
+    private static List<ParamInfo> parseParams(JsonObject activityJson) {
+        List<ParamInfo> result = new ArrayList<>();
+        if (activityJson == null) return result;
+        JsonObject parameters = activityJson.getAsJsonObject("parameters");
+        if (parameters == null) return result;
+        for (String paramName : parameters.keySet()) {
+            JsonObject meta = parameters.getAsJsonObject(paramName);
+            String typeStr  = meta.has("type")     ? meta.get("type").getAsString()     : "any";
+            boolean required = meta.has("required") && meta.get("required").getAsBoolean();
+            SerializedValue defaultVal = null;
+            if (!required && meta.has("default") && !meta.get("default").isJsonNull()) {
+                defaultVal = jsonToSerializedValue(meta.get("default"));
+            }
+            result.add(new ParamInfo(paramName, pythonTypeToSchema(typeStr), required, defaultVal));
+        }
+        return result;
+    }
+
+    private static ValueSchema pythonTypeToSchema(String pyType) {
+        return switch (pyType) {
+            case "int"   -> ValueSchema.INT;
+            case "float" -> ValueSchema.REAL;
+            case "bool"  -> ValueSchema.BOOLEAN;
+            default      -> ValueSchema.STRING;
+        };
+    }
+
+    private static SerializedValue jsonToSerializedValue(JsonElement el) {
+        if (el.isJsonNull())              return SerializedValue.of("null");
+        if (el.isJsonPrimitive()) {
+            var prim = el.getAsJsonPrimitive();
+            if (prim.isBoolean()) return SerializedValue.of(prim.getAsBoolean());
+            if (prim.isNumber()) {
+                double d = prim.getAsDouble();
+                if (d == Math.floor(d) && !Double.isInfinite(d)) return SerializedValue.of((long) d);
+                return SerializedValue.of(d);
+            }
+            return SerializedValue.of(prim.getAsString());
+        }
+        return SerializedValue.of(el.toString());
     }
 
     private static OutputType<Map<String, SerializedValue>> passthroughOutputType() {
