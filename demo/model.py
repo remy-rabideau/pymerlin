@@ -1,5 +1,5 @@
 from pymerlin import MissionModel
-from pymerlin.model_actions import delay, wait_until, spawn, call
+from pymerlin.model_actions import delay, wait_until, spawn
 
 
 @MissionModel

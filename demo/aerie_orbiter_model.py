@@ -922,8 +922,10 @@ def GenerateData(mission, bin: int = 0, rate: float = None, volume: float = None
 
 
 def _derive_generate(rate, volume, duration_s):
-    if rate is not None: rate = float(rate)
-    if volume is not None: volume = float(volume)
+    if rate is not None:
+        rate = float(rate)
+    if volume is not None:
+        volume = float(volume)
     dur_s = float(duration_s) if duration_s is not None else None
     have = (rate is not None) + (volume is not None) + (dur_s is not None)
     if have < 2:
@@ -941,7 +943,8 @@ def _derive_generate(rate, volume, duration_s):
 def DeleteData(mission, volume: float = float("inf"), limit_to_sent_data: bool = True, bin: int = 0):
     """Delete up to ``volume`` bits from a bin, optionally only already-downlinked data."""
     volume, bin = float(volume), int(bin)
-    if isinstance(limit_to_sent_data, str): limit_to_sent_data = limit_to_sent_data.lower() not in ("false", "0", "")
+    if isinstance(limit_to_sent_data, str):
+        limit_to_sent_data = limit_to_sent_data.lower() not in ("false", "0", "")
     sc  = mission.data.get_onboard_bin(bin)
     gnd = mission.data.get_ground_bin(bin)
     current_volume    = sc.volume.get()
@@ -956,8 +959,10 @@ def DeleteData(mission, volume: float = float("inf"), limit_to_sent_data: bool =
 @Mission.ActivityType
 def PlaybackData(mission, volume: float = None, duration_us: int = None):
     """Downlink data for a fixed duration or until a volume goal is met."""
-    if volume is not None: volume = float(volume)
-    if duration_us is not None: duration_us = int(duration_us)
+    if volume is not None:
+        volume = float(volume)
+    if duration_us is not None:
+        duration_us = int(duration_us)
     if volume is not None and volume == 0.0:
         return
     mission.data.downlink_active.set(True)
