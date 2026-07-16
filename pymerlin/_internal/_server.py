@@ -59,8 +59,7 @@ def _load_model_class(model_ref: str):
         if parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
         # Import the package first so the module can do relative imports.
-        import importlib
-        pkg = importlib.import_module(pkg_name)
+        importlib.import_module(pkg_name)
         module = importlib.import_module(f"{pkg_name}.{module_stem}")
     else:
         # Standalone file — load directly.
@@ -79,16 +78,24 @@ def _load_model_class(model_ref: str):
 
 def _python_type_name(annotation, default=inspect.Parameter.empty) -> str:
     if annotation is not inspect.Parameter.empty and annotation is not Any:
-        if annotation is int:   return "int"
-        if annotation is float: return "float"
-        if annotation is str:   return "str"
-        if annotation is bool:  return "bool"
+        if annotation is int:
+            return "int"
+        if annotation is float:
+            return "float"
+        if annotation is str:
+            return "str"
+        if annotation is bool:
+            return "bool"
     # Fall back to inferring from the default value
     if default is not inspect.Parameter.empty and default is not None:
-        if isinstance(default, bool):  return "bool"
-        if isinstance(default, int):   return "int"
-        if isinstance(default, float): return "float"
-        if isinstance(default, str):   return "str"
+        if isinstance(default, bool):
+            return "bool"
+        if isinstance(default, int):
+            return "int"
+        if isinstance(default, float):
+            return "float"
+        if isinstance(default, str):
+            return "str"
     return "str"
 
 
@@ -183,11 +190,7 @@ class _ActivityRunner:
     def start(self):
         ctx = _ReactionContext(self._outbox, self._inbox)
 
-        cell_values        = self._cell_values
-        cell_id_to_res     = self._cell_id_to_resource
-        emit_queue         = self._emit_queue
         spawn_queue        = self._spawn_queue
-        model_class        = self._model_class
 
         def _spawner(task_instance):
             activity_name = getattr(task_instance, "activity_name", None)
@@ -445,10 +448,11 @@ def _try_encode_condition(condition) -> dict | None:
     Returns None for complex lambdas that cannot be introspected.
     """
     try:
-        import dis, io
+        import dis
+        import io
         buf = io.StringIO()
         dis.dis(condition, file=buf)
-        bytecode = buf.getvalue()
+        buf.getvalue()
         # Heuristic: if the lambda references a single LOAD_ATTR (resource .get)
         # and a COMPARE_OP, extract it. Otherwise return None.
         # This is intentionally conservative — complex conditions fall back to opaque.
