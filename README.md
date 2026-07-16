@@ -1,73 +1,119 @@
 # pymerlin
 
 <!-- start elevator-pitch -->
-pymerlin is a discrete event simulation framework, built for use in the [Aerie](https://github.com/NASA-AMMOS/aerie>) ecosystem.
+pymerlin is a Python mission modeling framework for the [PlanDev](https://github.com/NASA-AMMOS/aerie) discrete-event simulation ecosystem. It lets you write PlanDev mission models in Python and either simulate them locally or package them as an uploadable PlanDev mission model JAR.
 
-To learn more about Aerie, read the [Aerie Docs](https://nasa-ammos.github.io/aerie-docs).
+To learn more about PlanDev, read the [PlanDev Docs](https://nasa-ammos.github.io/aerie-docs).
 <!-- end elevator-pitch -->
 
-### TODO:
-
-- [x] Daemon tasks
-- [x] More interesting cells and resources
-- [x] Conditions on static cells
-- [x] Conditions on autonomous cells
-- [x] Child tasks
-- [x] Spiceypy
-- [ ] daemon activities
-- [x] JPL time
-- [ ] pip-installable models
-- [ ] build Aerie-compatible jars and provide docker-compose file with python
-- [ ] checkpoint restart
-- [ ] Use available port to allow multiple pymerlin programs to run independently
-- [ ] Cell expiry
-- [ ] Polynomial evolution of cells
-- [ ] Value schemas (inferred from python types, maybe?)
-- [ ] Garbage collection of cells and effects (perhaps by wrapping integers in Supplier, and using `weakref.finalize`?)
-- [ ] Simulation configuration
-- [ ] Run with java that isn't simply the "java" executable on the path
+> **Branch note:** This fork is on `feature/pymerlin-shim-protocol`. The architecture has changed significantly from `main` — py4j has been replaced with a stdin/stdout JSON shim protocol. See [Architecture](#architecture) below.
 
 ## Prerequisites
 
-- python >=3.6.3 (only tested on 3.11 so far...)
-- java >=21
+- Python >= 3.10
+- Java >= 21 (only needed for local simulation via the `main`-branch py4j path; not needed for `pymerlin package`)
 
-Install pymerlin by running `pip install pymerlin`
+## Installation
 
-1. Make a venv `python -m venv venv`
-2. Activate the venv `source ./venv/bin/activate`
-3. Install requirements `python -m pip install -r requirements.txt`
-4. Start jupyter lab `jupyter-lab`
-5. When jupyter opens, navigate to `demo/simulation_example.py`
-6. Update the path in the first cell to point to your cloned `pymerlin` directory (we should eliminate the need for this
-   hack)
-7. Run all cells
+```shell
+python -m venv venv
+source ./venv/bin/activate
+pip install -r requirements.txt
+```
+
+Or install from the package directly:
+
+```shell
+pip install pymerlin
+```
+
+## Packaging a model for PlanDev
+
+To produce a PlanDev-uploadable mission model JAR from a Python model:
+
+```shell
+pymerlin package --model path/to/model.py:MissionClassName --out mission-model.jar
+```
+
+This bundles the Python model files into the JAR alongside the prebuilt shim, and stamps the model reference into the JAR manifest. The resulting JAR can be uploaded to a deployed PlanDev instance.
+
+**PlanDev worker requirement:** The PlanDev merlin-worker container must have `python3` and `pymerlin` installed. The PlanDev Dockerfiles on this branch already handle this — `python3`, `pip3`, and `pip3 install pymerlin` are included in both `merlin-server` and `merlin-worker` images.
 
 ## Architecture
 
-pymerlin is to merlin as pyspark is to spark. This means that pymerlin uses [py4j](https://www.py4j.org/) as a bridge
-between a python process and a java process. This allows pymerlin to use the Aerie simulation engine directly, without
-having to re-implement it in python.
+### Shim protocol (this branch)
 
-This means that running `simulate` starts a subprocess using `java -jar /path/to/pymerlin.jar`.
+The original py4j architecture (Python owns the process, launches Java as a subprocess) cannot produce a PlanDev-uploadable JAR because PlanDev requires Java to own the process and load mission models via its own classloader.
+
+This branch replaces py4j with a **shim protocol**: a prebuilt JAR (`pymerlin-shim.jar`) implements the PlanDev `MerlinPlugin` SPI and at simulation time spawns `python3 -m pymerlin._server` as a subprocess, communicating over **newline-delimited JSON on stdin/stdout**.
+
+```
+PlanDev merlin-worker (JVM)
+  └── ShimModelType (loaded from mission-model.jar)
+        └── spawns: python3 -m pymerlin._server --model model.py:Mission
+              ↕ newline-delimited JSON over stdin/stdout
+```
+
+**Pre-simulation (activity type registration):** When PlanDev uploads a JAR it calls `ModelType.getDirectiveTypes()`. The shim starts a one-shot Python subprocess, sends `{"op": "get_activity_types"}`, reads the response, then kills the subprocess. This populates the activity palette in the PlanDev UI.
+
+**At simulation time:** `ModelType.instantiate()` starts a long-lived Python subprocess for the duration of the simulation. The shim queries resources, allocates PlanDev cells for each one, then drives activities via the protocol:
+
+| Java → Python | Python → Java |
+|---|---|
+| `{"op": "run_activity", "id": "act-1", "name": "Foo", "args": {...}}` | `{"op": "delay", "duration_us": 3600000000, "emits": [...], "spawns": [...]}` |
+| `{"op": "resume", "id": "act-1"}` | `{"op": "done", "emits": [...]}` |
+
+Resource updates (`emits`) and child activity launches (`spawns`) are inlined into each yield response.
 
 ### Approachability over performance
 
-The main tenet of pymerlin is approachability, and its aim is to enable rapid prototyping of models and activities.
-While where possible, performance will be considered, it is expected that someone who wants to seriously engineer the
-performance of their simulation will port their code to Java - which has the double benefit of removing socket
-communication overhead, as well as giving the engineer a single Java process to instrument and analyze, rather than a
-hybrid system, which may be more difficult to characterize.
+The main tenet of pymerlin is approachability for rapid model prototyping. Users who need production simulation performance should port their model to Java, which eliminates the subprocess communication overhead and gives a single instrumented JVM process.
 
-## Building pymerlin.jar
+## Building the shim JAR
 
-If any changes are made to the java code, rebuild the jar and place it in the correct location as follows:
+If any changes are made to the Java shim code, rebuild and place the JAR where the Python package expects it:
 
 ```shell
 cd java
 ./gradlew assemble
-mv pymerlin/build/libs/pymerlin.jar ../pymerlin/_internal/jars
+cp pymerlin-shim/build/libs/pymerlin-shim.jar ../pymerlin/_internal/jars/
 ```
 
-The jar lives inside of the `pymerlin` python source directory because that ensures that it will be packaged
-(and accessible) in a distribution.
+The JAR lives inside the `pymerlin` Python source directory so it is included in the pip distribution.
+
+## Known limitations and open work
+
+### Functional gaps
+
+- **`call()` not implemented.** The `call()` action (parent waits for a child activity to complete before continuing) has no protocol op. It needs a `{"op": "call", ...}` message and a corresponding inline drive loop in `ShimModelType.driveToCompletion()`.
+
+- **`wait_until` does not work correctly.** `_try_encode_condition()` in `_server.py` is a stub that always returns `None`, so all conditions fall back to `wait_until_opaque`. On the Java side `wait_until_opaque` resumes immediately without actually waiting on the condition. Activities that block on resource values will not behave correctly.
+
+- **Cell evolution is ignored.** Cells declared with an `evolution` function (e.g. linear/polynomial resource dynamics) have their evolution silently discarded in `_ModelState.__init__`. Evolving resources always report their initial value mid-simulation.
+
+- **All resources are typed as `discrete`.** Float resources that should be interpolated linearly by PlanDev will appear as step functions in simulation results.
+
+- **Only primitive parameter types.** Activity parameters typed as lists, dicts, enums, `Duration`, or custom classes fall through to `ValueSchema.STRING`. PlanDev will show them as string fields with no validation.
+
+- **No model configuration.** `getConfigurationType()` returns empty — there is no way to pass mission-level configuration parameters to the model at simulation time.
+
+- **Concurrent activities share a single protocol pipe unsynchronized.** PlanDev runs activities in parallel Java threads, but all share one `pythonProcess`. Concurrent activity execution will corrupt the protocol. A serialization lock or multiplexed protocol is needed.
+
+### Operational issues
+
+- **Temp directories are not cleaned up.** `extractIfBundled` creates a temp directory on every simulation run and never deletes it.
+
+- **Python version path scan is incomplete.** `PythonProcess.java` scans a hardcoded list of site-packages paths up to Python 3.11. Python 3.12 (the default on Ubuntu Jammy) is not in the list, so `PYTHONPATH` may be empty even when pymerlin is installed. Set `PYMERLIN_SITE` explicitly if needed.
+
+- **No simulation timeout.** If the Python process hangs, the Java worker thread blocks indefinitely.
+
+- **Python tracebacks are not surfaced to the PlanDev UI.** Errors appear only in worker stderr logs, not in the simulation failure message returned to the user.
+
+### Missing tests
+
+`tests/test_simulation.py` covers only the py4j path. There are no tests for `_server.py` or the end-to-end `pymerlin package` + upload flow. Needed:
+- Activity execution with delays and emits
+- Spawn (child activities)
+- `call()` once implemented
+- `wait_until` with a simple condition
+- Resource value reporting through the protocol
