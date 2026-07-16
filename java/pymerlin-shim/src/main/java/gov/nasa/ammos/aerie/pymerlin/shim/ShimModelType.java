@@ -36,6 +36,7 @@ import gov.nasa.jpl.aerie.merlin.framework.Condition;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.delay;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.emit;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.spawn;
+import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.spawnWithSpan;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.threaded;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.waitUntil;
 
@@ -386,7 +387,7 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
                         ? s.get("name").getAsString() : null;
                     if (childName != null && inputTopics.containsKey(childName)) {
                         final String cn = childName;
-                        spawn(threaded(() -> runActivity(cn, Map.of())));
+                        spawnWithSpan(threaded(() -> runActivity(cn, Map.of())));
                     }
                 }
             }
