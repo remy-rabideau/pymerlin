@@ -77,8 +77,8 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
     private final AtomicLong activityCounter = new AtomicLong(0);
 
-    // Python process is shared across all activity executions for a given simulation.
-    private volatile PythonProcess pythonProcess = null;
+    // Bridge is shared across all activity executions for a given simulation.
+    private volatile PyBridge bridge = null;
 
     // -----------------------------------------------------------------
     // ModelType interface
@@ -87,7 +87,7 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     @Override
     public Map<String, ? extends DirectiveType<Unit, ?, ?>> getDirectiveTypes() {
         // Aerie may call this on a fresh instance (before instantiate()) to extract
-        // activity type metadata for the DB. Start a one-shot Python process if needed.
+        // activity type metadata for the DB. Start a one-shot bridge if needed.
         if (activityNames == null) {
             fetchActivityNames();
         }
@@ -97,22 +97,16 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     private synchronized void fetchActivityNames() {
         if (activityNames != null) return; // double-checked
         String modelRef = resolveModelRef();
-        try {
-            PythonProcess proc = PythonProcess.start(modelRef);
-            try {
-                JsonObject resp = proc.protocol().roundtrip(Protocol.obj("op", "get_activity_types"));
-                JsonObject types = resp.getAsJsonObject("types");
-                Set<String> names = new java.util.LinkedHashSet<>();
-                if (types != null) {
-                    for (String name : types.keySet()) {
-                        names.add(name);
-                        activityParams.put(name, parseParams(types.getAsJsonObject(name)));
-                    }
+        try (PyBridge oneShot = PyBridge.create(modelRef)) {
+            JsonObject types = oneShot.getActivityTypes();
+            Set<String> names = new java.util.LinkedHashSet<>();
+            if (types != null) {
+                for (String name : types.keySet()) {
+                    names.add(name);
+                    activityParams.put(name, parseParams(types.getAsJsonObject(name)));
                 }
-                activityNames = names;
-            } finally {
-                proc.destroy();
             }
+            activityNames = names;
         } catch (Exception e) {
             throw new RuntimeException("[PyMerlin] Could not fetch activity types: " + e.getMessage(), e);
         }
@@ -133,17 +127,14 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     public Unit instantiate(Instant planStart, Unit configuration, Initializer builder) {
         String modelRef = resolveModelRef();
         try {
-            pythonProcess = PythonProcess.start(modelRef);
+            bridge = PyBridge.create(modelRef);
         } catch (Exception e) {
-            throw new RuntimeException("[PyMerlin] Failed to start Python server: " + e.getMessage(), e);
+            throw new RuntimeException("[PyMerlin] Failed to start bridge: " + e.getMessage(), e);
         }
 
-        Protocol proto = pythonProcess.protocol();
-
-        // Populate activityNames from the live process (avoids a second Python start).
+        // Populate activityNames from the live bridge (avoids a second startup).
         try {
-            JsonObject typesResp = proto.roundtrip(Protocol.obj("op", "get_activity_types"));
-            JsonObject types = typesResp.getAsJsonObject("types");
+            JsonObject types = bridge.getActivityTypes();
             Set<String> names = new java.util.LinkedHashSet<>();
             if (types != null) {
                 for (String name : types.keySet()) {
@@ -164,16 +155,10 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
         // Query resources — allocate a cell for each one
         try {
-            JsonObject resResp = proto.roundtrip(Protocol.obj("op", "get_resources"));
-            JsonObject resources = resResp.getAsJsonObject("resources");
+            JsonObject resources = bridge.getResources();
             if (resources != null) {
                 for (String resName : resources.keySet()) {
-                    // Fetch initial value
-                    JsonObject valReq = new JsonObject();
-                    valReq.addProperty("op", "get_resource_value");
-                    valReq.addProperty("name", resName);
-                    JsonObject valResp = proto.roundtrip(valReq);
-                    String initialValue = valResp.has("value") ? valResp.get("value").getAsString() : "";
+                    String initialValue = bridge.getResourceValue(resName);
 
                     JsonObject resMeta = resources.getAsJsonObject(resName);
                     String vtype = (resMeta != null && resMeta.has("value_type"))
@@ -256,7 +241,8 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
             return ref;
         }
 
-        Path tmpDir = Files.createTempDirectory("pymerlin-model-");
+        String simId = java.util.UUID.randomUUID().toString().substring(0, 8);
+        Path tmpDir = Files.createTempDirectory("pymerlin-model-" + simId + "-");
 
         // Determine if this is a package (resourcePath has >2 segments, i.e. pymerlin_models/<pkg>/<file>)
         Path rp = Path.of(resourcePath);
@@ -336,24 +322,17 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
     private Unit runActivity(String activityName, Map<String, SerializedValue> args) {
         String actId = "act-" + activityCounter.incrementAndGet();
-        Protocol proto = pythonProcess.protocol();
 
-        // Serialize args to native JSON types so Python receives the correct types
-        JsonObject argsJson = new JsonObject();
+        // Serialize args to native JSON types so both bridges receive the correct types
+        Map<String, com.google.gson.JsonElement> argsJson = new java.util.LinkedHashMap<>();
         for (Map.Entry<String, SerializedValue> e : args.entrySet()) {
-            argsJson.add(e.getKey(), serializedValueToJson(e.getValue()));
+            argsJson.put(e.getKey(), serializedValueToJson(e.getValue()));
         }
-
-        JsonObject startMsg = new JsonObject();
-        startMsg.addProperty("op", "run_activity");
-        startMsg.addProperty("id", actId);
-        startMsg.addProperty("name", activityName);
-        startMsg.add("args", argsJson);
 
         try {
             emit(args, inputTopics.get(activityName));
-            JsonObject response = proto.roundtrip(startMsg);
-            driveToCompletion(actId, response, proto);
+            JsonObject response = bridge.runActivity(actId, activityName, argsJson);
+            driveToCompletion(actId, response);
             emit(Unit.UNIT, outputTopics.get(activityName));
         } catch (Exception e) {
             throw new RuntimeException("[PyMerlin] Activity " + activityName + " failed: " + e.getMessage(), e);
@@ -365,7 +344,7 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
      * Process yield responses from Python, honouring delay/emit/spawn/wait_until,
      * until we receive "done" or "error".
      */
-    private void driveToCompletion(String actId, JsonObject response, Protocol proto) throws Exception {
+    private void driveToCompletion(String actId, JsonObject response) throws Exception {
         while (true) {
             // Apply any emits first (before honouring the primary yield)
             if (response.has("emits")) {
@@ -405,27 +384,23 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
                 case "delay" -> {
                     long micros = response.get("duration_us").getAsLong();
                     delay(Duration.of(micros, Duration.MICROSECONDS));
-                    JsonObject resume = Protocol.obj("op", "resume", "id", actId);
-                    response = proto.roundtrip(resume);
+                    response = bridge.resume(actId);
                 }
 
                 case "wait_until" -> {
                     waitUntil(Condition.TRUE);
-                    JsonObject resume = Protocol.obj("op", "resume", "id", actId);
-                    response = proto.roundtrip(resume);
+                    response = bridge.resume(actId);
                 }
 
                 case "wait_until_opaque" -> {
-                    JsonObject resume = Protocol.obj("op", "resume", "id", actId);
-                    response = proto.roundtrip(resume);
+                    response = bridge.resume(actId);
                     if ("wait_until_opaque".equals(response.get("op").getAsString())) {
                         delay(Duration.of(1, Duration.MICROSECONDS));
                     }
                 }
 
                 case "running" -> {
-                    JsonObject resume = Protocol.obj("op", "resume", "id", actId);
-                    response = proto.roundtrip(resume);
+                    response = bridge.resume(actId);
                 }
 
                 default -> throw new RuntimeException("[PyMerlin] Unknown op from Python: " + op);
