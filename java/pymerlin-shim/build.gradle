@@ -46,12 +46,17 @@ dependencies {
     // worker's parent classloader supplies them (Gate A-2 confirmed a shim in a child
     // loader can create a Context against them).
     compileOnly "org.graalvm.polyglot:polyglot:${graalPyVersion}"
-    // Only `polyglot` (Context/Value/Engine) and `python-embedding` (GraalPyResources)
-    // are needed to COMPILE against. `python` is the pom that drags in the language
-    // implementation itself, which is purely a runtime concern and is why it appears as
-    // `implementation` on the worker but is listed here only for symmetry with §4.3 —
-    // it contributes no classes the shim compiles against.
-    compileOnly "org.graalvm.polyglot:python:${graalPyVersion}"
+    // `python` (a Maven-only <type>pom</type> artifact, no jar of its own) is
+    // deliberately NOT declared here or on the worker/server. On merlin-worker/
+    // -server, declaring it as a plain Gradle `implementation` dependency
+    // resolved to the bare .pom file on the runtime classpath, which leaked
+    // through orchestration-utils's `implementation project(':merlin-server')`
+    // into stateless-aerie's fat-jar `jar` task and broke `./gradlew assemble`
+    // ("Cannot expand ZIP '.../python-25.0.2.pom'", since zipTree() can't unzip
+    // a .pom). Harmless here specifically (compileOnly never reaches this jar
+    // task's own runtimeClasspath), but kept absent so this file matches what
+    // the worker/server actually provide at runtime -- GraalPy's own current
+    // Gradle docs never list it either, only `polyglot` + `python-embedding`.
     compileOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
 }
 
