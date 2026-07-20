@@ -19,6 +19,13 @@ repositories {
     }
 }
 
+// GraalPy version. MUST match `graalPyVersion` in plandev's gradle.properties, which
+// is what puts these jars on the merlin-worker / merlin-server runtime classpath.
+// plandev is a separate Gradle build, so this cannot be read from there — bumping one
+// means bumping both. Get it wrong and the shim compiles fine, then fails at runtime
+// in a worker log against an API the worker does not actually provide.
+ext.graalPyVersion = '25.0.2'
+
 dependencies {
     // merlin-sdk is provided by Aerie's classloader at runtime — do not bundle
     compileOnly name: 'merlin-sdk'
@@ -26,7 +33,26 @@ dependencies {
     implementation name: 'merlin-framework'
     compileOnly name: 'contrib'
     // gson is not provided by Aerie, so bundle it
+    // (droppable once the JSON protocol is gone — Phase 3, §6.3)
     implementation 'com.google.code.gson:gson:2.11.0'
+
+    // --- GraalPy: provided by merlin-worker at runtime — do NOT bundle (§4.3) ---
+    //
+    // `compileOnly` is load-bearing here, not stylistic. The `jar` block below folds
+    // configurations.runtimeClasspath into the model JAR, so `implementation` would
+    // pack the Python language + Truffle runtime — hundreds of megabytes — into every
+    // model JAR a user uploads. compileOnly keeps them off runtimeClasspath entirely,
+    // which is the same treatment merlin-sdk already gets and for the same reason: the
+    // worker's parent classloader supplies them (Gate A-2 confirmed a shim in a child
+    // loader can create a Context against them).
+    compileOnly "org.graalvm.polyglot:polyglot:${graalPyVersion}"
+    // Only `polyglot` (Context/Value/Engine) and `python-embedding` (GraalPyResources)
+    // are needed to COMPILE against. `python` is the pom that drags in the language
+    // implementation itself, which is purely a runtime concern and is why it appears as
+    // `implementation` on the worker but is listed here only for symmetry with §4.3 —
+    // it contributes no classes the shim compiles against.
+    compileOnly "org.graalvm.polyglot:python:${graalPyVersion}"
+    compileOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
 }
 
 jar {
