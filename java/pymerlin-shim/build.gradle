@@ -145,7 +145,16 @@ jar {
 // Console Launcher gets the same effect without a second main-class harness to maintain.
 //
 // Usage: run this task, then on the machine hosting the container:
+//   docker exec aerie_merlin_worker_1 rm -rf /tmp/docker-test-bundle   # see note below
 //   docker cp build/docker-test-bundle aerie_merlin_worker_1:/tmp/docker-test-bundle
+//
+// The `rm -rf` first matters: `docker cp` copies a local directory INTO an
+// already-existing destination directory rather than overwriting its contents, so a
+// second run without clearing the old copy first silently nests everything one level
+// deeper (/tmp/docker-test-bundle/docker-test-bundle/...) and stale classes on the old
+// classpath path mask the new ones -- new test classes fail with ClassNotFoundException
+// while old ones still resolve, which reads as a partial failure but is really "you're
+// running last time's bundle".
 //   docker exec aerie_merlin_worker_1 java \
 //     -cp "/tmp/docker-test-bundle/classes:/tmp/docker-test-bundle/lib/*" \
 //     -Dpymerlin.model.ref=/usr/src/pymerlin/demo/model.py:Mission \
