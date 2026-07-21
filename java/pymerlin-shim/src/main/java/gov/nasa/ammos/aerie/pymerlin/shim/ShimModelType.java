@@ -37,6 +37,7 @@ import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.delay;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.emit;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.spawn;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.spawnWithSpan;
+import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.callWithSpan;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.threaded;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.waitUntil;
 
@@ -79,6 +80,11 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
     // Bridge is shared across all activity executions for a given simulation.
     private volatile PyBridge bridge = null;
+
+    // Host callback object handed to Python on the Phase 3 (§6) direct-call path. Stateless
+    // (delegates to ModelActions on the calling ThreadedTask thread), so one shared instance
+    // serves every activity. Unused on the subprocess path.
+    private final PyActions pyActions = new PyActions(this);
 
     // -----------------------------------------------------------------
     // ModelType interface
@@ -331,13 +337,50 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
         try {
             emit(args, inputTopics.get(activityName));
-            JsonObject response = bridge.runActivity(actId, activityName, argsJson);
-            driveToCompletion(actId, response);
+            if (bridge.isDirect()) {
+                // Phase 3 (§6): run the Python function directly on this ThreadedTask thread.
+                // delay/emit/spawn/call happen via pyActions callbacks; returns when done.
+                bridge.runActivityDirect(actId, activityName, argsJson, pyActions);
+            } else {
+                // Phase 2 request/response path (SubprocessBridge, the oracle).
+                JsonObject response = bridge.runActivity(actId, activityName, argsJson);
+                driveToCompletion(actId, response);
+            }
             emit(Unit.UNIT, outputTopics.get(activityName));
         } catch (Exception e) {
             throw new RuntimeException("[PyMerlin] Activity " + activityName + " failed: " + e.getMessage(), e);
         }
         return Unit.UNIT;
+    }
+
+    // -----------------------------------------------------------------
+    // Direct-call callbacks (Phase 3, §6) — invoked from Python via PyActions,
+    // synchronously, on the ThreadedTask thread currently running the activity.
+    // -----------------------------------------------------------------
+
+    void directDelay(long micros) {
+        delay(Duration.of(micros, Duration.MICROSECONDS));
+    }
+
+    void directSpawn(String name, String argsJson) {
+        Map<String, SerializedValue> args = parseChildArgs(argsJson);
+        spawnWithSpan(threaded(() -> runActivity(name, args)));
+    }
+
+    void directCall(String name, String argsJson) {
+        Map<String, SerializedValue> args = parseChildArgs(argsJson);
+        callWithSpan(threaded(() -> runActivity(name, args)));
+    }
+
+    /** Parse the JSON args string PyActions hands over (from Python's _child_args_json). */
+    private static Map<String, SerializedValue> parseChildArgs(String argsJson) {
+        Map<String, SerializedValue> result = new LinkedHashMap<>();
+        if (argsJson == null || argsJson.isBlank()) return result;
+        JsonObject obj = com.google.gson.JsonParser.parseString(argsJson).getAsJsonObject();
+        for (String key : obj.keySet()) {
+            result.put(key, jsonToSerializedValue(obj.get(key)));
+        }
+        return result;
     }
 
     /**
@@ -408,7 +451,7 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         }
     }
 
-    private void applyEmit(String resourceName, String value) {
+    void applyEmit(String resourceName, String value) {
         ResourceCell rc = resourceCells.get(resourceName);
         if (rc != null) {
             emit(value, rc.topic());

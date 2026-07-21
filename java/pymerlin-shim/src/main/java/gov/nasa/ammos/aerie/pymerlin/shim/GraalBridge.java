@@ -57,6 +57,7 @@ public final class GraalBridge implements PyBridge {
      * metadata-only bridge never pays for instantiating the model or wiring up its cells.
      */
     private Value   modelState;
+    private Value   runActivityDirectFn;
     private boolean closed = false;
 
     public GraalBridge(String modelRef) throws Exception {
@@ -73,12 +74,13 @@ public final class GraalBridge implements PyBridge {
         }
 
         ctx.eval("python", "from pymerlin._internal._server import "
-            + "_load_model_class, _describe_activity_types, _ModelState");
+            + "_load_model_class, _describe_activity_types, _ModelState, run_activity_direct");
 
         Value loadModelClass = ctx.eval("python", "_load_model_class");
         modelClass = loadModelClass.execute(modelRef);
 
         describeActivityTypes = ctx.eval("python", "_describe_activity_types");
+        runActivityDirectFn   = ctx.eval("python", "run_activity_direct");
 
         // Ensure the GraalPy Context and any extracted source dir are released even if
         // close() is never called on this bridge (the persistent instantiate() bridge has
@@ -138,6 +140,25 @@ public final class GraalBridge implements PyBridge {
         Value resumeMethod = runner.getMember("resume");
         resumeMethod.execute();
         return captureRunnerState(actId, runner);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 3 (roadmap §6) — direct-call execution
+    // ------------------------------------------------------------------
+
+    @Override
+    public boolean isDirect() {
+        return true;
+    }
+
+    @Override
+    public void runActivityDirect(String actId, String activityName,
+                                  Map<String, JsonElement> args, PyActions actions) throws Exception {
+        // Runs the Python activity function on THIS (Java ThreadedTask) thread. delay/emit/
+        // spawn/call call straight back into `actions`; the call returns when the activity
+        // function returns. No _ActivityRunner, no queues — the whole point of Phase 3.
+        Value pyArgs = jsonArgsToPyDict(args);
+        runActivityDirectFn.execute(modelState(), actions, activityName, pyArgs);
     }
 
     @Override

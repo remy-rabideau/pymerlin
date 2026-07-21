@@ -59,6 +59,35 @@ public interface PyBridge extends AutoCloseable {
      */
     JsonObject resume(String actId) throws Exception;
 
+    // ------------------------------------------------------------------
+    // Phase 3 (roadmap §6) — direct-call execution
+    // ------------------------------------------------------------------
+
+    /**
+     * Whether this bridge runs activities by calling the Python function directly on the
+     * caller's thread with host callbacks ({@link #runActivityDirect}), instead of the
+     * request/response {@link #runActivity}/{@link #resume} protocol that
+     * {@code ShimModelType.driveToCompletion} drives.
+     *
+     * <p>{@code false} for {@link SubprocessBridge} (the JSON transport can only be
+     * request/response); {@code true} for {@link GraalBridge}, where in-process host
+     * callbacks make the queue-and-drive loop unnecessary.
+     */
+    default boolean isDirect() {
+        return false;
+    }
+
+    /**
+     * Run an activity to completion on the calling thread, driving delay/emit/spawn/call
+     * through {@code actions} rather than by returning yield responses. Only meaningful when
+     * {@link #isDirect()} is {@code true}; returns when the Python activity function returns.
+     */
+    default void runActivityDirect(String actId, String activityName,
+                                   Map<String, JsonElement> args, PyActions actions) throws Exception {
+        throw new UnsupportedOperationException(
+            "this bridge does not support direct execution; use runActivity/resume");
+    }
+
     /**
      * Release all resources held by this bridge (subprocess, GraalPy Context, etc.).
      * Called when the simulation ends.

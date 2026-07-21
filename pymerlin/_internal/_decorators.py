@@ -50,4 +50,11 @@ class TaskDefinition:
     def make_instance(self, *args, **kwargs) -> TaskInstance:
         instance = TaskInstance(lambda: self.inner.__call__(*args, **kwargs))
         instance.activity_name = self.name
+        # Store the call arguments so spawn()/call() can forward them to the child
+        # activity. Previously only `activity_name` was attached and the args stayed
+        # trapped in the lambda closure, so `spawn(collect_data(mission, data=512))`
+        # silently reached the child as `data=1024` (its default). args[0] is the
+        # mission/model instance and is re-injected by the runner, not forwarded.
+        instance.args = args
+        instance.kwargs = kwargs
         return instance

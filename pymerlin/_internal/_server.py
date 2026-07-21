@@ -20,7 +20,7 @@ from typing import Any
 
 from pymerlin._internal import _globals
 from pymerlin._internal._registrar import Registrar, set_value
-from pymerlin._internal._task_status import Delayed, Awaiting
+from pymerlin._internal._task_status import Delayed, Awaiting, Calling
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +135,33 @@ def _describe_resources(registrar: Registrar) -> dict:
     return result
 
 
+def _child_args(model_class, instance) -> dict:
+    """
+    Reconstruct the activity arguments for a spawned/called child from the TaskInstance
+    that `spawn(...)`/`call(...)` was handed. `make_instance` now stores `instance.args`
+    (positional, with the mission/model as args[0]) and `instance.kwargs`; here we drop the
+    mission and map any remaining positionals onto the child's declared parameter names,
+    matching the 'mission'-skipping convention `_describe_activity_types` already uses.
+    """
+    name = getattr(instance, "activity_name", None)
+    result = dict(getattr(instance, "kwargs", {}) or {})
+    positional = getattr(instance, "args", ()) or ()
+    if name is not None and name in getattr(model_class, "activity_types", {}):
+        task_def = model_class.activity_types[name]
+        func = getattr(task_def, "raw_func", None) or task_def.inner
+        param_names = [p for p in inspect.signature(func).parameters if p != "mission"]
+        # positional[1:] skips the mission/model instance passed as the first argument
+        for param_name, value in zip(param_names, positional[1:]):
+            result.setdefault(param_name, value)
+    return result
+
+
+def _child_args_json(model_class, instance) -> str:
+    """Same as `_child_args`, serialized to JSON so it crosses to Java as a plain String
+    (keeps the PyActions host interface free of GraalPy `Value` types)."""
+    return json.dumps(_child_args(model_class, instance))
+
+
 # ---------------------------------------------------------------------------
 # Reaction context — installed into _globals so delay()/wait_until() can yield
 # ---------------------------------------------------------------------------
@@ -150,6 +177,43 @@ class _ReactionContext:
         if msg == "resume":
             return
         raise RuntimeError(f"[PyMerlin] Unexpected control message: {msg}")
+
+
+class _GraalReactionContext:
+    """
+    Phase 3 (roadmap §6.2) direct-call reaction context, used only by the GraalBridge
+    in-process path. There is no queue and no separate Python thread: the activity runs
+    on the calling Java ThreadedTask thread, and delay/call/wait_until call straight back
+    into the Java host object (`java_actions`) synchronously. Gate B proved a host call
+    that parks the ThreadedTask thread (with Python frames live on its stack) does not hold
+    the context lock, so the engine's next task can still enter the Context.
+
+    Stateless apart from `java_actions`, which is a single shared object whose methods
+    delegate to `ModelActions.*` and therefore act on whichever ThreadedTask thread is
+    currently executing. That is why it is safe for concurrently-running activities to
+    share one instance via the `_globals.reaction_context` global (§6.4).
+    """
+
+    def __init__(self, java_actions):
+        self._java = java_actions
+
+    def yield_with(self, status):
+        if isinstance(status, Delayed):
+            from pymerlin.duration import MICROSECONDS
+            self._java.delay(int(status.duration.to_number_in(MICROSECONDS)))
+        elif isinstance(status, Calling):
+            child = status.child
+            self._java.callActivity(
+                getattr(child, "activity_name", None),
+                _child_args_json(_globals._current_context[2], child),
+            )
+        elif isinstance(status, Awaiting):
+            # Phase 3 keeps wait_until as a 1µs poll of the Python predicate — matching the
+            # subprocess oracle's opaque-condition behavior — entirely on this thread. Real
+            # cell-read-driven wait_until is Phase 4 (§7), once cells live in Java.
+            condition = status.condition
+            while not condition():
+                self._java.delay(1)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +355,13 @@ class _ModelState:
         self._current_emit_queue_holder = [None]
         holder = self._current_emit_queue_holder
 
+        # Phase 3 (graal direct path) sets this to the Java host actions object; when set,
+        # emits route straight to `java_actions.emit(...)` on the calling ThreadedTask
+        # thread instead of the subprocess queue. Stays None on the subprocess path, so
+        # that path's behavior below is unchanged.
+        self._java_actions = None
+        model_state = self
+
         for cell_ref, _iv, _ev in self._registrar.cells:
             def _make_emit(cref):
                 def _emit(event):
@@ -300,9 +371,12 @@ class _ModelState:
                     cell_values[cref.id] = new_val
                     res = cell_id_to_res.get(id(cref))
                     if res is not None:
-                        q = holder[0]
-                        if q is not None:
-                            q.put((res, str(new_val)))
+                        if model_state._java_actions is not None:
+                            model_state._java_actions.emit(res, str(new_val))
+                        else:
+                            q = holder[0]
+                            if q is not None:
+                                q.put((res, str(new_val)))
                 return _emit
             cell_ref.emit = _make_emit(cell_ref)
 
@@ -333,6 +407,40 @@ class _ModelState:
 
     def describe_resources(self) -> dict:
         return _describe_resources(self._registrar)
+
+
+# ---------------------------------------------------------------------------
+# Graal direct-call entry point (Phase 3, §6) — used by GraalBridge only
+# ---------------------------------------------------------------------------
+
+def run_activity_direct(model_state: "_ModelState", java_actions, activity_name: str, py_args: dict):
+    """
+    Run one activity to completion on the *calling* thread (a Java ThreadedTask), with no
+    _ActivityRunner, no background Python thread, and no queue handoff. delay/call/wait_until
+    call straight into `java_actions`; emits route through the model's patched cell emit into
+    `java_actions.emit`; spawn schedules a fresh child ThreadedTask via `java_actions`.
+
+    Returns normally when the activity function returns (Java then closes the span). If the
+    activity raises, the exception propagates out through GraalPy to Java as a PolyglotException.
+    """
+    model_state._java_actions = java_actions
+    _globals.reaction_context = _GraalReactionContext(java_actions)
+
+    model_class = model_state.model_class
+
+    def _spawner(child_instance):
+        java_actions.spawnActivity(
+            getattr(child_instance, "activity_name", None),
+            _child_args_json(model_class, child_instance),
+        )
+
+    _globals._current_context[1] = _spawner
+
+    task_def = model_class.activity_types[activity_name]
+    raw_func = getattr(task_def, "raw_func", None)
+    if raw_func is None:
+        raise KeyError(f"Activity {activity_name!r} has no raw_func — was it decorated with @Mission.ActivityType?")
+    raw_func(model_state.model_instance, **(py_args or {}))
 
 
 # ---------------------------------------------------------------------------
