@@ -109,8 +109,9 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
     private synchronized void fetchActivityNames() {
         if (activityNames != null) return; // double-checked
-        String modelRef = resolveModelRef();
-        try (PyBridge oneShot = PyBridge.create(modelRef)) {
+        String rawRef = rawModelRef();
+        String modelRef = GraalBridge.isCached(rawRef) ? rawRef : resolveModelRef(rawRef);
+        try (PyBridge oneShot = PyBridge.create(modelRef, rawRef)) {
             JsonObject types = oneShot.getActivityTypes();
             Set<String> names = new java.util.LinkedHashSet<>();
             if (types != null) {
@@ -138,9 +139,10 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
     @Override
     public Unit instantiate(Instant planStart, Unit configuration, Initializer builder) {
-        String modelRef = resolveModelRef();
+        String rawRef = rawModelRef();
+        String modelRef = GraalBridge.isCached(rawRef) ? rawRef : resolveModelRef(rawRef);
         try {
-            bridge = PyBridge.create(modelRef);
+            bridge = PyBridge.create(modelRef, rawRef);
         } catch (Exception e) {
             throw new RuntimeException("[PyMerlin] Failed to start bridge: " + e.getMessage(), e);
         }
@@ -210,24 +212,20 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     // Model ref resolution
     // -----------------------------------------------------------------
 
-    private static String resolveModelRef() {
-        // 1. Check system property (set by tests or external tooling)
+    /** Return the stable model ref string (manifest value or sysprop) — no extraction. */
+    private static String rawModelRef() {
         String sysProp = System.getProperty("pymerlin.model.ref");
         if (sysProp != null && !sysProp.isBlank()) return sysProp;
 
-        // 2. Read from the JAR that physically contains ShimModelType.
-        //    We cannot use getClassLoader().getResource("META-INF/MANIFEST.MF")
-        //    because the parent classloader's MANIFEST.MF would be found first.
         try {
             URL jarUrl = ShimModelType.class.getProtectionDomain().getCodeSource().getLocation();
             if (jarUrl != null) {
-                // Build a jar: URL to access the manifest entry directly
                 URL manifestUrl = new URL("jar:" + jarUrl.toExternalForm() + "!/META-INF/MANIFEST.MF");
                 try (InputStream is = manifestUrl.openStream()) {
                     Manifest mf = new Manifest(is);
                     String ref = mf.getMainAttributes().getValue("Pymerlin-Model-Ref");
                     if (ref != null && !ref.isBlank()) {
-                        return extractIfBundled(ref.trim());
+                        return ref.trim();
                     }
                 }
             }
@@ -237,6 +235,15 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
         throw new RuntimeException("[PyMerlin] No Pymerlin-Model-Ref found in JAR manifest. " +
             "Did you build the JAR with 'pymerlin package'?");
+    }
+
+    /** Resolve the raw ref to a filesystem path, extracting from the JAR if bundled. */
+    private static String resolveModelRef(String rawRef) {
+        try {
+            return extractIfBundled(rawRef);
+        } catch (IOException e) {
+            throw new RuntimeException("[PyMerlin] Failed to extract bundled model: " + e.getMessage(), e);
+        }
     }
 
     /**

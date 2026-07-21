@@ -77,9 +77,10 @@ public interface PyBridge extends AutoCloseable {
      * Instantiate the bridge for the given model reference. Always {@link GraalBridge} —
      * see the class doc for why this indirection still exists.
      *
-     * @param modelRef the model reference string (e.g. {@code /tmp/pymerlin-model-xxx/model.py:Mission})
+     * @param modelRef the resolved model reference (e.g. {@code /tmp/pymerlin-model-xxx/model.py:Mission})
+     * @param cacheKey stable key for context reuse (e.g. the raw manifest value {@code pymerlin_models/model.py:Mission})
      */
-    static PyBridge create(String modelRef) throws Exception {
-        return new GraalBridge(modelRef);
+    static PyBridge create(String modelRef, String cacheKey) throws Exception {
+        return new GraalBridge(modelRef, cacheKey);
     }
 }
