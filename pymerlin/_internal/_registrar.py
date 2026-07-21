@@ -80,19 +80,34 @@ def _is_gettable(obj):
 
 class CellRef(Gettable):
     """
-    A reference to an allocated piece of simulation state
+    A reference to an allocated piece of simulation state.
+
+    Under Java-backed execution (Phase 4, roadmap §7), get() calls through to
+    ModelActions.ask(cellId) via java_actions.ask(cell_index), which registers a read
+    dependency in QueryContext — enabling real waitUntil (the engine re-evaluates when
+    the cell's topic changes). emit() applies the event function locally (for typed
+    lambda support) then sends the string result to Java via java_actions.emitCell().
+
+    Falls back to the _globals.cell_values_by_id dict when java_actions is None
+    (standalone simulation via _framework.py, or model __init__ before activities run).
     """
 
     def __init__(self):
         super().__init__(self._get)
         self.id = None
         self.topic = None
+        self._cell_index = None    # sequential int, set by _ModelState (Phase 4)
+        self._value_type = str     # type of the cell value, set by _ModelState
 
     def emit(self, event):
         if not callable(event):
             event = set_value(event)
-        new_val = event(_globals.cell_values_by_id[self.id])
+        current = self._get()  # reads from Java if available, minimizing stale-value races
+        new_val = event(current)
         _globals.cell_values_by_id[self.id] = new_val
+        ja = _globals.java_actions
+        if ja is not None and self._cell_index is not None:
+            ja.emitCell(self._cell_index, str(new_val))
 
     def set(self, new_value):
         self.emit(set_value(new_value))
@@ -101,7 +116,21 @@ class CellRef(Gettable):
         self.emit(lambda x: x + addend)
 
     def _get(self):
+        ja = _globals.java_actions
+        if ja is not None and self._cell_index is not None:
+            val_str = ja.ask(self._cell_index)
+            return self._convert_from_java(val_str)
         return _globals.cell_values_by_id[self.id]
+
+    def _convert_from_java(self, val_str):
+        """Convert a string value from Java back to the Python type."""
+        if self._value_type is float:
+            return float(val_str)
+        elif self._value_type is int:
+            return int(float(val_str))
+        elif self._value_type is bool:
+            return val_str.lower() in ("true", "1")
+        return val_str
 
     def __iadd__(self, other):
         self.emit(lambda x: x + other)

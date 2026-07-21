@@ -118,6 +118,20 @@ public final class GraalBridge implements PyBridge {
         return result.asString();
     }
 
+    @Override
+    public com.google.gson.JsonArray getCells() throws Exception {
+        Value describeCells = modelState().getMember("describe_cells");
+        Value result = describeCells.execute();
+        // result is a Python list of dicts — convert to JsonArray
+        com.google.gson.JsonArray arr = new com.google.gson.JsonArray();
+        if (result != null && !result.isNull() && result.hasArrayElements()) {
+            for (long i = 0; i < result.getArraySize(); i++) {
+                arr.add(valueToJsonElement(result.getArrayElement(i)));
+            }
+        }
+        return arr;
+    }
+
     // ------------------------------------------------------------------
     // Phase 3 (roadmap §6) — direct-call execution
     // ------------------------------------------------------------------

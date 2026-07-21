@@ -1,19 +1,15 @@
 """
 In-process model runtime for the PyMerlin shim, called directly by GraalBridge (Java) via
-GraalPy host calls — no subprocess, no protocol, no queues (roadmap Phase 3, §6).
+GraalPy host calls — no subprocess, no protocol, no queues.
 
-An activity runs on the calling Java `ThreadedTask` thread. `delay`/`call`/`wait_until`
-call straight back into a Java host object (`java_actions`); emits route through the
-model's patched cell `emit` into `java_actions.emit`; `spawn` schedules a fresh child
-`ThreadedTask` via `java_actions.spawnActivity`.
-
-Until 2026-07-21 this module was a newline-delimited-JSON server exec'd as a subprocess
-(`python -m pymerlin._server`) and driven by a `SubprocessBridge`/`PythonProcess`/`Protocol`
-request-response loop, with `_ActivityRunner` running each activity on its own background
-thread and communicating via `Queue`s. That path — and the `SubprocessBridge` regression
-oracle it served as, once the direct path was proven byte-identical against it on a real
-GraalPy image — was deleted in the same change that removed this docstring's predecessor;
-see roadmap.md §6.3/§6.6 for the deletion record and the evidence it was gated on.
+An activity runs on the calling Java `ThreadedTask` thread. `delay`/`call` call straight
+back into a Java host object (`java_actions`); emits route through `CellRef.emit` →
+`java_actions.emitCell` (Phase 4, roadmap §7); `wait_until` passes the Python predicate to
+`java_actions.waitUntil` as a `BooleanSupplier` and the engine re-evaluates it when cell
+dependencies change (no polling); `spawn` schedules a fresh child `ThreadedTask` via
+`java_actions.spawnActivity`. `CellRef.get` calls `java_actions.ask(cell_index)` which goes
+through `ModelActions.ask(cellId)`, registering read dependencies in QueryContext for
+waitUntil (Phase 4, roadmap §7).
 """
 
 import importlib.util
@@ -24,7 +20,7 @@ import sys
 from typing import Any
 
 from pymerlin._internal import _globals
-from pymerlin._internal._registrar import Registrar, set_value
+from pymerlin._internal._registrar import Registrar
 from pymerlin._internal._task_status import Delayed, Awaiting, Calling
 
 
@@ -188,11 +184,13 @@ class _ReactionContext:
                 _child_args_json(_globals._current_context[2], child),
             )
         elif isinstance(status, Awaiting):
-            # Phase 3 keeps wait_until as a 1µs poll of the Python predicate. Real
-            # cell-read-driven wait_until is Phase 4 (§7), once cells live in Java.
-            condition = status.condition
-            while not condition():
-                self._java.delay(1)
+            # Phase 4 (§7): real cell-read-driven waitUntil. The Python predicate is
+            # passed to Java as a BooleanSupplier (GraalPy auto-wraps). Inside the
+            # Condition, the engine evaluates the predicate on the engine thread;
+            # CellRef.get() calls java_actions.ask() which goes through QueryContext
+            # and registers read dependencies. The engine re-evaluates when those
+            # topics change — no polling.
+            self._java.waitUntil(status.condition)
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +199,13 @@ class _ReactionContext:
 
 class _ModelState:
     """
-    Holds the single shared model instance and patches CellRef.emit to route through
-    `java_actions.emit(...)` on the calling ThreadedTask thread.
+    Holds the single shared model instance. Phase 4 (roadmap §7) wires each Python
+    CellRef to a real Aerie cell via sequential cell indices: CellRef.get() calls
+    java_actions.ask(cell_index) which goes through ModelActions.ask(cellId), and
+    CellRef.emit() applies the event locally then calls java_actions.emitCell(cell_index,
+    str(new_val)). The local _globals.cell_values_by_id dict is still populated as a
+    typed mirror for event function application (lambda x: x + 15.0 needs a float, not
+    a string) and as a fallback during model __init__ before java_actions is available.
     """
 
     def __init__(self, model_class):
@@ -213,8 +216,10 @@ class _ModelState:
         self.cell_values: dict = {}
         self.cell_id_to_resource: dict = {}
 
-        for cell_ref, initial_value, _evolution in self._registrar.cells:
+        for i, (cell_ref, initial_value, _evolution) in enumerate(self._registrar.cells):
             cell_ref.id = id(cell_ref)
+            cell_ref._cell_index = i
+            cell_ref._value_type = type(initial_value)
             self.cell_values[id(cell_ref)] = initial_value
 
         for resource_name, getter in self._registrar.resources:
@@ -225,30 +230,30 @@ class _ModelState:
                     self.cell_id_to_resource[id(cell_ref)] = resource_name
 
         _globals.cell_values_by_id = self.cell_values
-
-        cell_values    = self.cell_values
-        cell_id_to_res = self.cell_id_to_resource
-
-        # Set by run_activity_direct before the first activity executes; every activity
-        # execution on this ModelState assigns the same value (one PyActions per bridge),
-        # so re-assignment is idempotent, not a per-activity race (see _ReactionContext doc).
-        self._java_actions = None
-        model_state = self
-
-        for cell_ref, _iv, _ev in self._registrar.cells:
-            def _make_emit(cref):
-                def _emit(event):
-                    if not callable(event):
-                        event = set_value(event)
-                    new_val = event(cell_values[cref.id])
-                    cell_values[cref.id] = new_val
-                    res = cell_id_to_res.get(id(cref))
-                    if res is not None:
-                        model_state._java_actions.emit(res, str(new_val))
-                return _emit
-            cell_ref.emit = _make_emit(cell_ref)
-
         _globals._current_context[2] = model_class
+
+    def describe_cells(self) -> list:
+        """Return cell metadata for Java to allocate real Aerie cells (Phase 4, §7).
+        Cell order matches registrar.cells — indices are the contract between
+        CellRef._cell_index (Python) and cellsByIndex (Java)."""
+        cells = []
+        for cell_ref, initial_value, _evolution in self._registrar.cells:
+            current = _globals.cell_values_by_id.get(cell_ref.id, initial_value)
+            res_name = self.cell_id_to_resource.get(id(cell_ref))
+            if isinstance(current, bool):
+                vtype = "bool"
+            elif isinstance(current, int):
+                vtype = "int"
+            elif isinstance(current, float):
+                vtype = "float"
+            else:
+                vtype = "str"
+            cells.append({
+                "initial": str(current),
+                "resource": res_name,
+                "type": vtype,
+            })
+        return cells
 
     def get_resource_value(self, name: str) -> str:
         for res_name, getter in self._registrar.resources:
@@ -267,14 +272,14 @@ class _ModelState:
 def run_activity_direct(model_state: "_ModelState", java_actions, activity_name: str, py_args: dict):
     """
     Run one activity to completion on the *calling* thread (a Java ThreadedTask).
-    delay/call/wait_until call straight into `java_actions`; emits route through the
-    model's patched cell emit into `java_actions.emit`; spawn schedules a fresh child
+    delay/call/wait_until call straight into `java_actions`; emits route through
+    CellRef.emit → java_actions.emitCell (Phase 4); spawn schedules a fresh child
     ThreadedTask via `java_actions`.
 
     Returns normally when the activity function returns (Java then closes the span). If the
     activity raises, the exception propagates out through GraalPy to Java as a PolyglotException.
     """
-    model_state._java_actions = java_actions
+    _globals.java_actions = java_actions
     _globals.reaction_context = _ReactionContext(java_actions)
 
     model_class = model_state.model_class

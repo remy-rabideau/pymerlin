@@ -27,15 +27,19 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.jar.Manifest;
 
+import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.ask;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.delay;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.emit;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.spawnWithSpan;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.callWithSpan;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.threaded;
+import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.waitUntil;
 
 /**
  * Generic Aerie ModelType implementation that delegates all model behaviour to Python,
@@ -58,6 +62,10 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     ) {}
 
     private final Map<String, ResourceCell> resourceCells = new HashMap<>();
+
+    // Indexed cell list — Python CellRef references cells by integer index (Phase 4, §7).
+    // Populated during instantiate(); order matches the order Python's registrar.cells sees them.
+    private final List<ResourceCell> cellsByIndex = new ArrayList<>();
     private final Map<String, Topic<Map<String, SerializedValue>>> inputTopics  = new HashMap<>();
     private final Map<String, Topic<Unit>>                         outputTopics = new HashMap<>();
 
@@ -158,35 +166,41 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
             throw new RuntimeException("[PyMerlin] get_activity_types failed: " + e.getMessage(), e);
         }
 
-        // Query resources — allocate a cell for each one
+        // Phase 4 (§7): allocate a real Aerie cell for every Python cell.
+        // Cell indices match the Python registrar.cells order so CellRef._cell_index
+        // on the Python side maps directly to cellsByIndex on the Java side.
         try {
-            JsonObject resources = bridge.getResources();
-            if (resources != null) {
-                for (String resName : resources.keySet()) {
-                    String initialValue = bridge.getResourceValue(resName);
-
-                    JsonObject resMeta = resources.getAsJsonObject(resName);
-                    String vtype = (resMeta != null && resMeta.has("value_type"))
-                        ? resMeta.get("value_type").getAsString() : "str";
+            com.google.gson.JsonArray cells = bridge.getCells();
+            if (cells != null) {
+                for (int i = 0; i < cells.size(); i++) {
+                    JsonObject cellMeta = cells.get(i).getAsJsonObject();
+                    String initialValue = cellMeta.has("initial") ? cellMeta.get("initial").getAsString() : "";
+                    String vtype = cellMeta.has("type") ? cellMeta.get("type").getAsString() : "str";
+                    String resName = (cellMeta.has("resource") && !cellMeta.get("resource").isJsonNull())
+                        ? cellMeta.get("resource").getAsString() : null;
 
                     Topic<String> topic = new Topic<>();
                     CellId<String[]> cellId = allocateStringCell(builder, initialValue, topic);
-                    resourceCells.put(resName, new ResourceCell(topic, cellId, vtype));
+                    ResourceCell rc = new ResourceCell(topic, cellId, vtype);
+                    cellsByIndex.add(rc);
 
-                    final String capturedName = resName;
-                    final CellId<String[]> capturedCell = cellId;
-                    final String capturedVtype = vtype;
-                    builder.resource(capturedName, new Resource<String>() {
-                        @Override public String getType() { return "discrete"; }
-                        @Override public OutputType<String> getOutputType() { return typedOutputType(capturedVtype); }
-                        @Override public String getDynamics(gov.nasa.jpl.aerie.merlin.protocol.driver.Querier q) {
-                            return q.getState(capturedCell)[0];
-                        }
-                    });
+                    if (resName != null) {
+                        resourceCells.put(resName, rc);
+                        final String capturedName = resName;
+                        final CellId<String[]> capturedCell = cellId;
+                        final String capturedVtype = vtype;
+                        builder.resource(capturedName, new Resource<String>() {
+                            @Override public String getType() { return "discrete"; }
+                            @Override public OutputType<String> getOutputType() { return typedOutputType(capturedVtype); }
+                            @Override public String getDynamics(gov.nasa.jpl.aerie.merlin.protocol.driver.Querier q) {
+                                return q.getState(capturedCell)[0];
+                            }
+                        });
+                    }
                 }
             }
         } catch (Exception e) {
-            throw new RuntimeException("[PyMerlin] get_resources failed: " + e.getMessage(), e);
+            throw new RuntimeException("[PyMerlin] getCells failed: " + e.getMessage(), e);
         }
 
         return Unit.UNIT;
@@ -383,6 +397,26 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         } else {
             System.err.println("[PyMerlin] emit for unknown resource: " + resourceName);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 (roadmap §7) — cell-index-based access from Python CellRef
+    // -----------------------------------------------------------------
+
+    String directAsk(int cellIndex) {
+        ResourceCell rc = cellsByIndex.get(cellIndex);
+        return ask(rc.cellId())[0];
+    }
+
+    void directEmitCell(int cellIndex, String value) {
+        ResourceCell rc = cellsByIndex.get(cellIndex);
+        emit(value, rc.topic());
+    }
+
+    void directWaitUntil(BooleanSupplier pyCondition) {
+        waitUntil((positive, atEarliest, atLatest) ->
+            (pyCondition.getAsBoolean() == positive)
+                ? Optional.of(atEarliest) : Optional.empty());
     }
 
     // -----------------------------------------------------------------

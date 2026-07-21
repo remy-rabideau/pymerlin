@@ -46,6 +46,15 @@ public interface PyBridge extends AutoCloseable {
     String getResourceValue(String name) throws Exception;
 
     /**
+     * Query the model's cells after instantiation (Phase 4, roadmap §7).
+     * Returns a JsonArray where each element is a JsonObject with:
+     * {@code {"initial": "0.0", "type": "float", "resource": "/power_w"}}
+     * Cell indices match the Python {@code registrar.cells} order.
+     * {@code resource} is null for cells not registered as resources.
+     */
+    com.google.gson.JsonArray getCells() throws Exception;
+
+    /**
      * Run an activity to completion on the calling thread (a Java {@code ThreadedTask}),
      * driving delay/emit/spawn/call through {@code actions} (roadmap §6). Returns when the
      * Python activity function returns; propagates as an exception if it raises.

@@ -1,25 +1,27 @@
 package gov.nasa.ammos.aerie.pymerlin.shim;
 
+import java.util.function.BooleanSupplier;
+
 /**
- * The Java host object handed to Python on the Phase 3 (roadmap §6) direct-call path.
+ * The Java host object handed to Python via {@link GraalBridge} (roadmap §6/§7).
  *
- * <p>A Python activity running in-process (via {@link GraalBridge}) calls these methods
- * <em>synchronously, on the Java {@code ThreadedTask} thread it is executing on</em>, in
- * place of the old queue-handoff-to-{@code driveToCompletion} protocol:
+ * <p>A Python activity running in-process calls these methods <em>synchronously, on the Java
+ * {@code ThreadedTask} thread it is executing on</em>:
  * <ul>
- *   <li>{@code delay(micros)} → {@code ModelActions.delay(...)} parks this thread (with the
- *       Python frames still live on its stack) until the engine resumes it; Gate B proved
- *       GraalPy releases the context lock across this host call so other tasks can still run.</li>
- *   <li>{@code emit(resource, value)} → routes to the resource's topic.</li>
- *   <li>{@code spawnActivity(name, argsJson)} → a fresh child {@code ThreadedTask}
- *       ({@code InSpan.Fresh}), fire-and-forget.</li>
- *   <li>{@code callActivity(name, argsJson)} → a fresh child, blocking the caller until it
- *       completes ({@code InSpan.Fresh} + {@code call} semantics).</li>
+ *   <li>{@code delay(micros)} → {@code ModelActions.delay(...)} parks this thread.</li>
+ *   <li>{@code emit(resource, value)} → routes to the resource's topic (Phase 3 path, kept
+ *       for backwards compat).</li>
+ *   <li>{@code emitCell(cellIndex, value)} → emits to the cell's topic by index (Phase 4).</li>
+ *   <li>{@code ask(cellIndex)} → {@code ModelActions.ask(cellId)} — returns the current cell
+ *       value and, during {@code waitUntil} condition evaluation, registers a read dependency
+ *       so the engine re-evaluates when the topic changes (Phase 4, §7).</li>
+ *   <li>{@code spawnActivity(name, argsJson)} → a fresh child {@code ThreadedTask}.</li>
+ *   <li>{@code callActivity(name, argsJson)} → a fresh child, blocking the caller.</li>
+ *   <li>{@code waitUntil(condition)} → wraps the Python predicate in an Aerie {@code Condition}
+ *       and yields to the engine; the engine re-evaluates on the engine thread whenever a
+ *       dependency changes (Phase 4, §7). GraalPy auto-wraps the Python callable to
+ *       {@code BooleanSupplier}.</li>
  * </ul>
- *
- * <p>Arguments cross the boundary as a JSON string rather than a GraalPy {@code Value}, so
- * this interface (and everything it touches in {@link ShimModelType}) stays free of any
- * polyglot types — the same reason the rest of the shim speaks JSON.
  *
  * <p>A single instance is shared across every activity: its methods delegate to
  * {@code ModelActions.*}, which act on whichever {@code ThreadedTask} thread is currently
@@ -39,6 +41,18 @@ public final class PyActions {
 
     public void emit(String resource, String value) {
         shim.applyEmit(resource, value);
+    }
+
+    public String ask(int cellIndex) {
+        return shim.directAsk(cellIndex);
+    }
+
+    public void emitCell(int cellIndex, String value) {
+        shim.directEmitCell(cellIndex, value);
+    }
+
+    public void waitUntil(BooleanSupplier condition) {
+        shim.directWaitUntil(condition);
     }
 
     public void spawnActivity(String name, String argsJson) {
