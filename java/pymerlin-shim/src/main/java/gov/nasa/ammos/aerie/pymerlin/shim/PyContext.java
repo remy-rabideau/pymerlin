@@ -26,8 +26,8 @@ import java.nio.file.Path;
  * needed once filesystem access is sandboxed — but the source is now cleaned up on
  * bridge close either way, which is the item §5.3 flagged.
  *
- * The {@link Context} is cached and reused across simulations by {@link GraalBridge}
- * (roadmap §11.3), eliminating ~15s cold-start on every simulation after the first.
+ * One {@link Context} is created per simulation ({@code instantiate()} call).
+ * Reuse across simulations is a future optimisation (roadmap §11.3).
  */
 public final class PyContext {
 

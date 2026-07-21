@@ -33,23 +33,6 @@ import java.util.Map;
  */
 public final class GraalBridge implements PyBridge {
 
-    // ------------------------------------------------------------------
-    // Static context cache (roadmap §11.3) — eliminates ~15s GraalPy
-    // cold-start on every simulation after the first. The GraalPy Context,
-    // model class, and Python function references are shared across all
-    // GraalBridge instances for the same model ref. Each simulation still
-    // gets a fresh _ModelState (clean cells).
-    // ------------------------------------------------------------------
-    private static final Object CACHE_LOCK = new Object();
-    private static String  cachedModelRef;
-    private static Context cachedCtx;
-    private static Value   cachedModelClass;
-    private static Value   cachedDescribeActivityTypes;
-    private static Value   cachedRunActivityDirectFn;
-    private static Value   cachedMakeModelState;
-    private static Path    cachedCleanupDir;
-    private static Thread  cachedShutdownHook;
-
     private final Context ctx;
     private final Value   modelClass;
     private final Value   describeActivityTypes;
@@ -60,6 +43,7 @@ public final class GraalBridge implements PyBridge {
      * did not create (roadmap §5.3 — "somewhere to fix the temp-dirs-not-cleaned item").
      */
     private final Path    cleanupDir;
+    private final Thread  shutdownHook;
 
     /**
      * The model instance state. Built lazily: pure metadata queries (getActivityTypes,
@@ -69,110 +53,45 @@ public final class GraalBridge implements PyBridge {
     private Value   modelState;
     private Value   runActivityDirectFn;
     private boolean closed = false;
-    private final boolean ownsContext;  // true only if this instance created the cache
 
-    public GraalBridge(String modelRef, String cacheKey) throws Exception {
+    public GraalBridge(String modelRef) throws Exception {
         Path srcDir = resolveSrcDir(modelRef);
+        this.cleanupDir = findExtractionRoot(srcDir);
 
-        synchronized (CACHE_LOCK) {
-            if (cachedCtx != null && cacheKey.equals(cachedModelRef)) {
-                // Reuse cached context — no cold-start.
-                this.ctx = cachedCtx;
-                this.modelClass = cachedModelClass;
-                this.describeActivityTypes = cachedDescribeActivityTypes;
-                this.runActivityDirectFn = cachedRunActivityDirectFn;
-                this.cleanupDir = null;  // cached instance owns cleanup
-                this.ownsContext = false;
-                System.err.println("[PyMerlin][GraalBridge] reusing cached context for: " + modelRef);
-            } else {
-                // Invalidate any previous cache.
-                evictCache();
+        ctx = PyContext.build();
 
-                Path cleanupDir = findExtractionRoot(srcDir);
-                Context ctx = PyContext.build();
+        System.err.println("[PyMerlin][GraalBridge] context built, resources root: " + PyContext.resolveResourcesRoot());
 
-                System.err.println("[PyMerlin][GraalBridge] context built, resources root: " + PyContext.resolveResourcesRoot());
-
-                ctx.eval("python", "import sys");
-                if (srcDir != null) {
-                    ctx.eval("python", "sys.path.insert(0, '" + srcDir.toString().replace("'", "\\'") + "')");
-                }
-
-                ctx.eval("python", "from pymerlin._internal._server import "
-                    + "_load_model_class, _describe_activity_types, _ModelState, run_activity_direct");
-
-                Value loadModelClass = ctx.eval("python", "_load_model_class");
-                Value modelClass = loadModelClass.execute(modelRef);
-
-                // Populate cache.
-                cachedModelRef = cacheKey;
-                cachedCtx = ctx;
-                cachedModelClass = modelClass;
-                cachedDescribeActivityTypes = ctx.eval("python", "_describe_activity_types");
-                cachedRunActivityDirectFn = ctx.eval("python", "run_activity_direct");
-                cachedMakeModelState = ctx.eval("python", "_ModelState");
-                cachedCleanupDir = cleanupDir;
-
-                // Shutdown hook protects the cached context.
-                cachedShutdownHook = new Thread(GraalBridge::evictCache, "pymerlin-graalbridge-cleanup");
-                Runtime.getRuntime().addShutdownHook(cachedShutdownHook);
-
-                this.ctx = ctx;
-                this.modelClass = modelClass;
-                this.describeActivityTypes = cachedDescribeActivityTypes;
-                this.runActivityDirectFn = cachedRunActivityDirectFn;
-                this.cleanupDir = cleanupDir;
-                this.ownsContext = true;
-
-                System.err.println("[PyMerlin][GraalBridge] model loaded (cold start): " + modelRef);
-            }
+        ctx.eval("python", "import sys");
+        if (srcDir != null) {
+            ctx.eval("python", "sys.path.insert(0, '" + srcDir.toString().replace("'", "\\'") + "')");
         }
+
+        ctx.eval("python", "from pymerlin._internal._server import "
+            + "_load_model_class, _describe_activity_types, _ModelState, run_activity_direct");
+
+        Value loadModelClass = ctx.eval("python", "_load_model_class");
+        modelClass = loadModelClass.execute(modelRef);
+
+        describeActivityTypes = ctx.eval("python", "_describe_activity_types");
+        runActivityDirectFn   = ctx.eval("python", "run_activity_direct");
+
+        // Ensure the GraalPy Context and any extracted source dir are released even if
+        // close() is never called on this bridge (the persistent instantiate() bridge has
+        // no explicit teardown hook in ModelType). Mirrors PythonProcess's shutdown hook.
+        this.shutdownHook = new Thread(this::hookClose, "pymerlin-graalbridge-cleanup");
+        Runtime.getRuntime().addShutdownHook(this.shutdownHook);
+
+        System.err.println("[PyMerlin][GraalBridge] model loaded: " + modelRef);
     }
 
     /** Lazily instantiate the model's {@code _ModelState} on first use (see field doc). */
     private Value modelState() {
         if (modelState == null) {
-            synchronized (CACHE_LOCK) {
-                modelState = cachedMakeModelState.execute(modelClass);
-            }
+            Value makeModelState = ctx.eval("python", "_ModelState");
+            modelState = makeModelState.execute(modelClass);
         }
         return modelState;
-    }
-
-    /** Check if a context is cached for the given key (avoids redundant extraction). */
-    static boolean isCached(String cacheKey) {
-        synchronized (CACHE_LOCK) {
-            return cachedCtx != null && cacheKey.equals(cachedModelRef);
-        }
-    }
-
-    /** Tear down the cached context and clean up extracted source. */
-    private static synchronized void evictCache() {
-        if (cachedCtx != null) {
-            try {
-                cachedCtx.close(true);
-            } catch (Exception e) {
-                System.err.println("[PyMerlin][GraalBridge] error closing cached context: " + e.getMessage());
-            }
-            if (cachedCleanupDir != null) {
-                deleteRecursively(cachedCleanupDir);
-            }
-            try {
-                if (cachedShutdownHook != null) {
-                    Runtime.getRuntime().removeShutdownHook(cachedShutdownHook);
-                }
-            } catch (IllegalStateException ignored) {
-                // JVM shutdown already in progress.
-            }
-            cachedCtx = null;
-            cachedModelRef = null;
-            cachedModelClass = null;
-            cachedDescribeActivityTypes = null;
-            cachedRunActivityDirectFn = null;
-            cachedMakeModelState = null;
-            cachedCleanupDir = null;
-            cachedShutdownHook = null;
-        }
     }
 
     // ------------------------------------------------------------------
@@ -231,10 +150,30 @@ public final class GraalBridge implements PyBridge {
     public synchronized void close() {
         if (closed) return;
         closed = true;
-        // The cached context is intentionally kept alive for reuse. Only the
-        // per-simulation modelState is discarded. The cache is cleaned up on
-        // JVM shutdown or when a different model ref invalidates it.
-        modelState = null;
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException ignored) {
+            // JVM shutdown already in progress — the hook will run doClose() itself.
+        }
+        doClose();
+    }
+
+    /** Invoked only from the shutdown hook, when close() was never called explicitly. */
+    private synchronized void hookClose() {
+        if (closed) return;
+        closed = true;
+        doClose();
+    }
+
+    private void doClose() {
+        try {
+            ctx.close(true);
+        } catch (Exception e) {
+            System.err.println("[PyMerlin][GraalBridge] error closing context: " + e.getMessage());
+        }
+        if (cleanupDir != null) {
+            deleteRecursively(cleanupDir);
+        }
     }
 
     // ------------------------------------------------------------------
