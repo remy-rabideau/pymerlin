@@ -15,7 +15,11 @@ repositories {
     flatDir {
         dirs "${plandevPath}/merlin-sdk/build/libs",
              "${plandevPath}/merlin-framework/build/libs",
-             "${plandevPath}/contrib/build/libs"
+             "${plandevPath}/contrib/build/libs",
+             "${plandevPath}/merlin-driver/build/libs",
+             "${plandevPath}/type-utils/build/libs",
+             "${plandevPath}/orchestration-utils/build/libs",
+             "${plandevPath}/parsing-utilities/build/libs"
     }
 }
 
@@ -58,6 +62,38 @@ dependencies {
     // the worker/server actually provide at runtime -- GraalPy's own current
     // Gradle docs never list it either, only `polyglot` + `python-embedding`.
     compileOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
+
+    // --- test-only: drive a real simulation through the PyBridge seam, no production impact ---
+    // The subprocess-bridge half of the parity test always runs (needs only CPython + the
+    // dev venv). The graal half is guarded by Assumptions and lights up only where a GraalPy
+    // runtime + python-resources venv exist (i.e. the built worker image), so `./gradlew test`
+    // on a stock JDK exercises the oracle without false-failing on the unproven path.
+    testImplementation name: 'merlin-sdk'
+    testImplementation name: 'merlin-driver'
+    testImplementation name: 'type-utils'
+    testImplementation name: 'orchestration-utils'
+    testImplementation name: 'parsing-utilities'
+    testImplementation 'org.glassfish:javax.json:1.1.4'
+    testImplementation 'it.unimi.dsi:fastutil:8.5.12'
+    testImplementation 'org.slf4j:slf4j-simple:2.0.7'
+    testImplementation 'commons-cli:commons-cli:1.8.0'
+    testImplementation 'org.apache.commons:commons-lang3:3.13.0'
+    testImplementation 'org.junit.jupiter:junit-jupiter-engine:6.0.1'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        exceptionFormat = 'full'
+        showStandardStreams = true
+    }
+    // Point the shim at the demo model and the repo's own dev venv so the subprocess
+    // bridge's `import pymerlin` resolves. The graal half additionally needs a
+    // python-resources venv (PYMERLIN_RESOURCES) and a GraalPy-tier JVM; absent those it
+    // is skipped, not failed.
+    systemProperty 'pymerlin.model.ref', file("${rootDir}/../demo/model.py").absolutePath + ':Mission'
+    systemProperty 'pymerlin.python', file("${rootDir}/../venv/bin/python3").absolutePath
 }
 
 jar {

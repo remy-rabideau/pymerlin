@@ -11,8 +11,11 @@ import java.util.Map;
  * Two implementations exist (roadmap §5):
  *  - {@link SubprocessBridge} — wraps the existing {@link PythonProcess}/{@link Protocol}
  *    newline-delimited JSON subprocess. Selected by {@code pymerlin.bridge=subprocess}.
+ *    This is Phase 2's regression oracle and, until the byte-identical exit criterion is
+ *    validated, the default.
  *  - {@link GraalBridge} — calls the same {@code _server.py} functions in-process via
- *    GraalPy. Selected by {@code pymerlin.bridge=graal} (default).
+ *    GraalPy. Selected by {@code pymerlin.bridge=graal}. Becomes the default once
+ *    byte-identical parity is proven (that is also the Phase 3 precondition).
  *
  * Select at runtime via {@code -Dpymerlin.bridge=graal|subprocess}.
  */
@@ -67,12 +70,14 @@ public interface PyBridge extends AutoCloseable {
 
     /**
      * Instantiate the bridge selected by {@code -Dpymerlin.bridge=graal|subprocess}.
-     * Defaults to {@code graal} if the property is absent.
+     * Defaults to {@code subprocess} — the validated oracle — while GraalBridge's
+     * byte-identical exit criterion (roadmap §5) is still being proven. Flip this to
+     * {@code graal} once that passes; that flip is the visible marker Phase 2 is done.
      *
      * @param modelRef the model reference string (e.g. {@code /tmp/pymerlin-model-xxx/model.py:Mission})
      */
     static PyBridge create(String modelRef) throws Exception {
-        String choice = System.getProperty("pymerlin.bridge", "graal");
+        String choice = System.getProperty("pymerlin.bridge", "subprocess");
         return switch (choice) {
             case "subprocess" -> new SubprocessBridge(modelRef);
             case "graal"      -> new GraalBridge(modelRef);

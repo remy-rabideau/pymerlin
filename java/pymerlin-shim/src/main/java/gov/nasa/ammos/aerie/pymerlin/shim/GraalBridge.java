@@ -1,6 +1,5 @@
 package gov.nasa.ammos.aerie.pymerlin.shim;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -25,46 +24,78 @@ import java.util.Map;
  *   <li>{@code _ModelState.get_resource_value(name)}</li>
  *   <li>{@code _ModelState.make_runner(id, name, args)} + {@code runner.start()}</li>
  *   <li>{@code runner.resume()}</li>
- *   <li>{@code _send_runner_state(id, runner)} — called to read runner state into a
- *       {@link JsonObject} so {@link ShimModelType}'s {@code driveToCompletion} loop
- *       can remain unchanged (roadmap §5 "keep every seam").</li>
  * </ul>
  *
- * Selected by {@code -Dpymerlin.bridge=graal} (the default).
+ * The subprocess bridge's {@code _send_runner_state} is deliberately NOT reused here:
+ * it writes to stdout via {@code _send}, which is meaningless in-process. Instead
+ * {@link #captureRunnerState} reads the runner's state fields directly and assembles
+ * the same {@link JsonObject} schema, so {@link ShimModelType}'s {@code driveToCompletion}
+ * loop stays unchanged (roadmap §5 "keep every seam"). The consequence — the two bridges'
+ * state-capture logic must be kept in sync by hand — is what the Phase 2 byte-identical
+ * exit criterion (both bridges → identical results) guards against.
+ *
+ * Selected by {@code -Dpymerlin.bridge=graal}. While the byte-identical exit criterion is
+ * still being validated, {@code subprocess} is the default (see {@link PyBridge#create}).
  */
 public final class GraalBridge implements PyBridge {
 
-    private static final Gson GSON = new Gson();
-
     private final Context ctx;
     private final Value   modelClass;
-    private final Value   modelState;
-    private final Value   sendRunnerState;
     private final Value   describeActivityTypes;
+
+    /**
+     * The extracted model-source directory this bridge is responsible for deleting on
+     * {@link #close}, or {@code null} when the model source is a user-provided path we
+     * did not create (roadmap §5.3 — "somewhere to fix the temp-dirs-not-cleaned item").
+     */
+    private final Path    cleanupDir;
+    private final Thread  shutdownHook;
+
+    /**
+     * The model instance state. Built lazily: pure metadata queries (getActivityTypes,
+     * used by the one-shot getDirectiveTypes() path) only need {@link #modelClass}, so a
+     * metadata-only bridge never pays for instantiating the model or wiring up its cells.
+     */
+    private Value   modelState;
+    private boolean closed = false;
 
     public GraalBridge(String modelRef) throws Exception {
         Path srcDir = resolveSrcDir(modelRef);
+        this.cleanupDir = findExtractionRoot(srcDir);
 
-        ctx = PyContext.build(srcDir);
+        ctx = PyContext.build();
 
         System.err.println("[PyMerlin][GraalBridge] context built, resources root: " + PyContext.resolveResourcesRoot());
 
         ctx.eval("python", "import sys");
-        ctx.eval("python", "sys.path.insert(0, '" + srcDir.toString().replace("'", "\\'") + "')");
+        if (srcDir != null) {
+            ctx.eval("python", "sys.path.insert(0, '" + srcDir.toString().replace("'", "\\'") + "')");
+        }
 
         ctx.eval("python", "from pymerlin._internal._server import "
-            + "_load_model_class, _describe_activity_types, _ModelState, _send_runner_state");
+            + "_load_model_class, _describe_activity_types, _ModelState");
 
         Value loadModelClass = ctx.eval("python", "_load_model_class");
         modelClass = loadModelClass.execute(modelRef);
 
-        Value makeModelState = ctx.eval("python", "_ModelState");
-        modelState = makeModelState.execute(modelClass);
-
         describeActivityTypes = ctx.eval("python", "_describe_activity_types");
-        sendRunnerState       = ctx.eval("python", "_send_runner_state");
+
+        // Ensure the GraalPy Context and any extracted source dir are released even if
+        // close() is never called on this bridge (the persistent instantiate() bridge has
+        // no explicit teardown hook in ModelType). Mirrors PythonProcess's shutdown hook.
+        this.shutdownHook = new Thread(this::hookClose, "pymerlin-graalbridge-cleanup");
+        Runtime.getRuntime().addShutdownHook(this.shutdownHook);
 
         System.err.println("[PyMerlin][GraalBridge] model loaded: " + modelRef);
+    }
+
+    /** Lazily instantiate the model's {@code _ModelState} on first use (see field doc). */
+    private Value modelState() {
+        if (modelState == null) {
+            Value makeModelState = ctx.eval("python", "_ModelState");
+            modelState = makeModelState.execute(modelClass);
+        }
+        return modelState;
     }
 
     // ------------------------------------------------------------------
@@ -79,21 +110,21 @@ public final class GraalBridge implements PyBridge {
 
     @Override
     public JsonObject getResources() throws Exception {
-        Value describeResources = modelState.getMember("describe_resources");
+        Value describeResources = modelState().getMember("describe_resources");
         Value result = describeResources.execute();
         return valueToJsonObject(result);
     }
 
     @Override
     public String getResourceValue(String name) throws Exception {
-        Value getVal = modelState.getMember("get_resource_value");
+        Value getVal = modelState().getMember("get_resource_value");
         Value result = getVal.execute(name);
         return result.asString();
     }
 
     @Override
     public JsonObject runActivity(String actId, String activityName, Map<String, JsonElement> args) throws Exception {
-        Value makeRunner = modelState.getMember("make_runner");
+        Value makeRunner = modelState().getMember("make_runner");
         Value pyArgs = jsonArgsToPyDict(args);
         Value runner = makeRunner.execute(actId, activityName, pyArgs);
         Value startMethod = runner.getMember("start");
@@ -110,11 +141,32 @@ public final class GraalBridge implements PyBridge {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException ignored) {
+            // JVM shutdown already in progress — the hook will run doClose() itself.
+        }
+        doClose();
+    }
+
+    /** Invoked only from the shutdown hook, when close() was never called explicitly. */
+    private synchronized void hookClose() {
+        if (closed) return;
+        closed = true;
+        doClose();
+    }
+
+    private void doClose() {
         try {
             ctx.close(true);
         } catch (Exception e) {
             System.err.println("[PyMerlin][GraalBridge] error closing context: " + e.getMessage());
+        }
+        if (cleanupDir != null) {
+            deleteRecursively(cleanupDir);
         }
     }
 
@@ -196,14 +248,6 @@ public final class GraalBridge implements PyBridge {
             }
         }
         return base;
-    }
-
-    /**
-     * Per-simulation active runners map, stored as a Python dict in the context
-     * so runner {@link Value} objects (which are tied to the context) don't escape it.
-     */
-    private Value activeRunners() {
-        return ctx.eval("python", "_graal_bridge_runners if '_graal_bridge_runners' in dir() else {}");
     }
 
     private void storeActiveRunner(String actId, Value runner) {
@@ -326,5 +370,39 @@ public final class GraalBridge implements PyBridge {
             return Path.of(filePart).toAbsolutePath().getParent();
         }
         return Path.of(".").toAbsolutePath();
+    }
+
+    /**
+     * If {@code srcDir} lives inside one of {@code ShimModelType.extractIfBundled}'s own
+     * {@code pymerlin-model-*} temp extractions, return that extraction root so {@link #close}
+     * can delete it. Returns {@code null} for user-provided source paths we did not create —
+     * we must never delete those. Only ever returns a directory under the JVM temp dir whose
+     * name starts with {@code pymerlin-model-}, so the deletion is tightly scoped.
+     */
+    private static Path findExtractionRoot(Path srcDir) {
+        if (srcDir == null) return null;
+        Path tmp = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize();
+        Path d = srcDir.toAbsolutePath().normalize();
+        while (d != null && d.startsWith(tmp) && !d.equals(tmp)) {
+            Path name = d.getFileName();
+            if (name != null && name.toString().startsWith("pymerlin-model-")) return d;
+            d = d.getParent();
+        }
+        return null;
+    }
+
+    private static void deleteRecursively(Path dir) {
+        if (dir == null || !Files.exists(dir)) return;
+        try (var paths = Files.walk(dir)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (java.io.IOException e) {
+                    System.err.println("[PyMerlin][GraalBridge] could not delete " + p + ": " + e.getMessage());
+                }
+            });
+        } catch (java.io.IOException e) {
+            System.err.println("[PyMerlin][GraalBridge] could not clean up " + dir + ": " + e.getMessage());
+        }
     }
 }

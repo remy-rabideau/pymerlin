@@ -12,12 +12,19 @@ import java.nio.file.Path;
  * <pre>
  *   ${PYMERLIN_RESOURCES}/
  *     venv/   ← pymerlin + numpy + spiceypy, pip-installed by install.sh
- *     src/    ← per-simulation model source, populated by GraalBridge
+ *     src/    ← on the Python path by GraalPyResources convention; must exist
  * </pre>
  *
  * The root path is read from the {@code PYMERLIN_RESOURCES} environment
  * variable (set in the Dockerfile), falling back to the {@code pymerlin.resources}
  * system property, then to {@code /opt/pymerlin/python-resources}.
+ *
+ * <p>Phase 2 note: {@link GraalBridge} currently loads the model by adding its extracted
+ * directory to {@code sys.path} directly (which works because {@link #build} sets
+ * {@code allowAllAccess(true)}), rather than copying it into {@code ${root}/src} as
+ * roadmap §5.3 ultimately calls for. That relocation is deferred — it is only strictly
+ * needed once filesystem access is sandboxed — but the source is now cleaned up on
+ * bridge close either way, which is the item §5.3 flagged.
  *
  * One {@link Context} is created per simulation ({@code instantiate()} call).
  * Reuse across simulations is a future optimisation (roadmap §11.3).
@@ -26,7 +33,7 @@ public final class PyContext {
 
     private PyContext() {}
 
-    public static Context build(Path modelSrcDir) {
+    public static Context build() {
         Path resourcesRoot = resolveResourcesRoot();
 
         return GraalPyResources
