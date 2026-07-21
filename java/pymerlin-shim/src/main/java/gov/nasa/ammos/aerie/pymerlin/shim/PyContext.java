@@ -1,5 +1,6 @@
 package gov.nasa.ammos.aerie.pymerlin.shim;
 
+import gov.nasa.jpl.aerie.graalpy.SharedPythonEngine;
 import org.graalvm.polyglot.Context;
 import org.graalvm.python.embedding.GraalPyResources;
 
@@ -26,8 +27,23 @@ import java.nio.file.Path;
  * needed once filesystem access is sandboxed — but the source is now cleaned up on
  * bridge close either way, which is the item §5.3 flagged.
  *
- * One {@link Context} is created per simulation ({@code instantiate()} call).
- * Reuse across simulations is a future optimisation (roadmap §11.3).
+ * <p>One {@link Context} is still created (and closed) per simulation ({@code
+ * instantiate()} call) — that per-simulation isolation is intentional and stays,
+ * since Python module globals and model state must never leak between unrelated
+ * simulations. What's shared (roadmap §11.3) is the underlying {@link
+ * org.graalvm.polyglot.Engine}, via {@link SharedPythonEngine}: a JVM-wide singleton
+ * that holds only the compiled-code cache and language configuration, no
+ * simulation-specific state, so every {@code Context} built here amortizes the
+ * interpreter/stdlib/pymerlin compile cost across every simulation this worker or
+ * server process ever runs — instead of paying it fresh each time. A shared {@code
+ * Context} (rather than a shared {@code Engine}) was considered and rejected: it
+ * would carry {@code sys.modules} and model-level globals across simulations of
+ * different plans/models, which nothing has validated as safe. {@link
+ * SharedPythonEngine} deliberately lives in its own plandev module rather than here,
+ * because a class bundled inside the uploaded model JAR gets reloaded — and its
+ * statics reset — by the fresh {@code URLClassLoader} {@code MissionModelLoader}
+ * creates for every simulation; only a class the worker's own parent classloader
+ * supplies can actually stay shared.
  */
 public final class PyContext {
 
@@ -38,6 +54,7 @@ public final class PyContext {
 
         return GraalPyResources
             .contextBuilder(resourcesRoot)
+            .engine(SharedPythonEngine.get())
             .allowAllAccess(true)
             .allowCreateThread(true)   // _ActivityRunner still uses Python threads in Phase 2
             .build();

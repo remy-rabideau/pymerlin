@@ -19,7 +19,8 @@ repositories {
              "${plandevPath}/merlin-driver/build/libs",
              "${plandevPath}/type-utils/build/libs",
              "${plandevPath}/orchestration-utils/build/libs",
-             "${plandevPath}/parsing-utilities/build/libs"
+             "${plandevPath}/parsing-utilities/build/libs",
+             "${plandevPath}/graalpy-engine-cache/build/libs"
     }
 }
 
@@ -68,6 +69,12 @@ dependencies {
     // the worker/server actually provide at runtime -- GraalPy's own current
     // Gradle docs never list it either, only `polyglot` + `python-embedding`.
     compileOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
+    // Shared GraalPy Engine holder (roadmap §11.3) -- provided by merlin-worker/-server
+    // at runtime for the exact same reason polyglot/python-embedding are above: a class
+    // bundled into the model JAR gets reloaded (statics reset) by the fresh
+    // URLClassLoader MissionModelLoader creates per simulation, so the cache has to live
+    // on the worker's own classpath instead.
+    compileOnly name: 'graalpy-engine-cache'
 
     // --- test-only: drive a real simulation through the PyBridge seam, no production impact ---
     // The subprocess-bridge half of the parity test always runs (needs only CPython + the
@@ -84,6 +91,7 @@ dependencies {
     // untouched; this is purely what the test JVM needs to load the classes it references.
     testRuntimeOnly "org.graalvm.polyglot:polyglot:${graalPyVersion}"
     testRuntimeOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
+    testRuntimeOnly name: 'graalpy-engine-cache'
     testImplementation name: 'merlin-sdk'
     testImplementation name: 'merlin-driver'
     testImplementation name: 'type-utils'
