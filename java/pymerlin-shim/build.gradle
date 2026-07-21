@@ -68,6 +68,16 @@ dependencies {
     // dev venv). The graal half is guarded by Assumptions and lights up only where a GraalPy
     // runtime + python-resources venv exist (i.e. the built worker image), so `./gradlew test`
     // on a stock JDK exercises the oracle without false-failing on the unproven path.
+    //
+    // polyglot/python-embedding are `compileOnly` above because in PRODUCTION the worker's
+    // parent classloader supplies them. `./gradlew test` runs in a plain forked JVM with no
+    // such parent classloader, so without these the graal-parity test fails immediately with
+    // NoClassDefFoundError on GraalPyResources — even on a machine with the venv provisioned —
+    // before it ever gets far enough to prove or disprove parity. testRuntimeOnly here, not
+    // compileOnly: production behavior (main's runtimeClasspath, what ships in the jar) is
+    // untouched; this is purely what the test JVM needs to load the classes it references.
+    testRuntimeOnly "org.graalvm.polyglot:polyglot:${graalPyVersion}"
+    testRuntimeOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
     testImplementation name: 'merlin-sdk'
     testImplementation name: 'merlin-driver'
     testImplementation name: 'type-utils'
@@ -94,6 +104,20 @@ test {
     // is skipped, not failed.
     systemProperty 'pymerlin.model.ref', file("${rootDir}/../demo/model.py").absolutePath + ':Mission'
     systemProperty 'pymerlin.python', file("${rootDir}/../venv/bin/python3").absolutePath
+
+    // `test` forks a separate JVM — `-D` flags on the `./gradlew` command line only land
+    // on the Gradle daemon, NOT that forked JVM, unless explicitly forwarded here. Without
+    // this, `-Dpymerlin.test.graal=true` silently has no effect and the graal parity test
+    // just skips with no error, which is exactly what happened the first time this ran.
+    if (System.getProperty('pymerlin.test.graal') != null) {
+        systemProperty 'pymerlin.test.graal', System.getProperty('pymerlin.test.graal')
+    }
+    if (System.getProperty('pymerlin.resources') != null) {
+        systemProperty 'pymerlin.resources', System.getProperty('pymerlin.resources')
+    }
+    if (System.getProperty('pymerlin.bridge') != null) {
+        systemProperty 'pymerlin.bridge', System.getProperty('pymerlin.bridge')
+    }
 }
 
 jar {
