@@ -9,13 +9,15 @@ import java.util.Map;
  * Transport-agnostic bridge between ShimModelType and the Python runtime.
  *
  * Two implementations exist (roadmap §5):
+ *  - {@link GraalBridge} — calls the same {@code _server.py} functions in-process via
+ *    GraalPy. Selected by {@code pymerlin.bridge=graal} (the default). Byte-identical
+ *    parity against the subprocess oracle passed (roadmap §5.5) — verified via
+ *    {@code BridgeParityTest#graalBridgeMatchesSubprocessOracle} against a real
+ *    GraalPy-provisioned worker image, not just locally.
  *  - {@link SubprocessBridge} — wraps the existing {@link PythonProcess}/{@link Protocol}
  *    newline-delimited JSON subprocess. Selected by {@code pymerlin.bridge=subprocess}.
- *    This is Phase 2's regression oracle and, until the byte-identical exit criterion is
- *    validated, the default.
- *  - {@link GraalBridge} — calls the same {@code _server.py} functions in-process via
- *    GraalPy. Selected by {@code pymerlin.bridge=graal}. Becomes the default once
- *    byte-identical parity is proven (that is also the Phase 3 precondition).
+ *    Kept as the rollback switch and regression oracle (that is the whole point of §5's
+ *    "keep every seam" framing) — retire it in Phase 3, not before.
  *
  * Select at runtime via {@code -Dpymerlin.bridge=graal|subprocess}.
  */
@@ -70,14 +72,18 @@ public interface PyBridge extends AutoCloseable {
 
     /**
      * Instantiate the bridge selected by {@code -Dpymerlin.bridge=graal|subprocess}.
-     * Defaults to {@code subprocess} — the validated oracle — while GraalBridge's
-     * byte-identical exit criterion (roadmap §5) is still being proven. Flip this to
-     * {@code graal} once that passes; that flip is the visible marker Phase 2 is done.
+     * Defaults to {@code graal} — the byte-identical exit criterion (roadmap §5.5) has
+     * passed against a real GraalPy image. {@code subprocess} remains available as an
+     * explicit rollback switch (set {@code -Dpymerlin.bridge=subprocess}) if a
+     * graal-specific issue surfaces that the parity test didn't catch — in particular,
+     * the AERIE-1516 per-simulation teardown gap (roadmap §5.5) means a long-running
+     * worker accumulates one un-closed GraalPy Context per simulation between restarts;
+     * that's a real, separate, still-open concern this default flip does not resolve.
      *
      * @param modelRef the model reference string (e.g. {@code /tmp/pymerlin-model-xxx/model.py:Mission})
      */
     static PyBridge create(String modelRef) throws Exception {
-        String choice = System.getProperty("pymerlin.bridge", "subprocess");
+        String choice = System.getProperty("pymerlin.bridge", "graal");
         return switch (choice) {
             case "subprocess" -> new SubprocessBridge(modelRef);
             case "graal"      -> new GraalBridge(modelRef);

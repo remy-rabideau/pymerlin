@@ -34,8 +34,8 @@ import java.util.Map;
  * state-capture logic must be kept in sync by hand — is what the Phase 2 byte-identical
  * exit criterion (both bridges → identical results) guards against.
  *
- * Selected by {@code -Dpymerlin.bridge=graal}. While the byte-identical exit criterion is
- * still being validated, {@code subprocess} is the default (see {@link PyBridge#create}).
+ * Selected by {@code -Dpymerlin.bridge=graal} (the default, since the byte-identical exit
+ * criterion has passed against a real GraalPy image — roadmap §5.5; see {@link PyBridge#create}).
  */
 public final class GraalBridge implements PyBridge {
 

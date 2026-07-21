@@ -52,6 +52,12 @@ public final class SpanTimingTest {
 
     @Test
     public void compressDataSpawnedFromCollectDataHasCorrectSpanTiming() throws ExecutionException, InterruptedException {
+        // Pin explicitly rather than ride PyBridge.create's ambient default (now `graal`,
+        // roadmap §5.5) — this test is specifically about the Phase 1/SubprocessBridge path
+        // per the class doc above, and must keep working on a plain JDK with no GraalPy
+        // runtime, regardless of which bridge production defaults to.
+        System.setProperty("pymerlin.bridge", "subprocess");
+
         final Instant startTime = Instant.parse("2026-01-01T00:00:00Z");
         final Timestamp start = new Timestamp(startTime);
         final Timestamp end = new Timestamp(startTime.plusSeconds(600)); // 10 min: covers 5+2 min plus margin
