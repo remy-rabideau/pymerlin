@@ -1,5 +1,15 @@
 # PyMerlin Shim Protocol
 
+> **Superseded (2026-07-21, roadmap.md §6.3/§6.6).** This document describes the
+> Phase 0–2 subprocess/JSON protocol — `SubprocessBridge`, `PythonProcess.java`,
+> `Protocol.java`, and this module's `_send`/`_recv`/`_ActivityRunner` — which was deleted
+> once the Phase 3 in-process direct-call path (GraalPy host callbacks, no subprocess, no
+> protocol) was proven byte-identical against it on a real GraalPy image. Kept here for
+> historical/reference value only; do not use this as current documentation. A proper
+> rewrite documenting the direct-call architecture is Phase 5 work (roadmap.md §8,
+> "Document the worker-image contract") — until that lands, `roadmap.md` §6 is the
+> authoritative description of how the shim actually works.
+
 Newline-delimited JSON over stdin/stdout between the Java shim JAR and the Python server process.
 
 - Each message is a single JSON object followed by `\n`.

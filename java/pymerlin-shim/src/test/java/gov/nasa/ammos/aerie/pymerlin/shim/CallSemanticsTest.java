@@ -23,8 +23,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Phase 3 (§6) exit-criterion coverage for {@code call()}, which the demo model never uses
- * and which the subprocess oracle never supported (its {@code _ActivityRunner} has no
- * {@code Calling} branch). Graal-only, like {@link BridgeParityTest#graalBridgeMatchesSubprocessOracle};
+ * and which the (since-deleted, roadmap §6.3/§6.6) subprocess oracle never supported either
+ * (its {@code _ActivityRunner} had no {@code Calling} branch). Requires a real GraalPy
+ * runtime + provisioned {@code python-resources} venv, like {@link DemoModelSimulationTest};
  * skipped unless {@code -Dpymerlin.test.graal=true}.
  *
  * <p>The model ({@code call_model.py}, a bundled test resource): {@code parent_act} call()s
@@ -38,7 +39,8 @@ public final class CallSemanticsTest {
     @Test
     public void callBlocksParentUntilChildCompletes() throws Exception {
         assumeTrue(Boolean.getBoolean("pymerlin.test.graal"),
-            "call() runs only on the direct (graal) path; skipped without -Dpymerlin.test.graal=true");
+            "requires a real GraalPy runtime + provisioned python-resources venv; "
+            + "skipped without -Dpymerlin.test.graal=true so a stock JDK does not false-fail");
 
         // Point the shim at the bundled call model for the duration of this test, then restore.
         final Path model = Path.of(

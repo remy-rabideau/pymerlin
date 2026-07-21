@@ -20,43 +20,43 @@ import java.util.concurrent.ExecutionException;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Phase 6 test #6 (roadmap.md §9), pulled forward and run early against the current
- * Phase 1 path (this repo predates the Java-side PyBridge split entirely —
- * {@code ShimModelType} talks directly to Python via {@code Protocol}/{@code PythonProcess}),
- * because it needs a real assertion, not a screenshot of a Gantt chart, to settle
- * spawned-child span timing.
+ * Phase 6 test #6 (roadmap.md §9), pulled forward because it needs a real assertion, not a
+ * screenshot of a Gantt chart, to settle spawned-child span timing. Originally written and
+ * run against the Phase 1 subprocess path; that path no longer exists (roadmap §6.3/§6.6) —
+ * {@code ShimModelType} now always runs activities in-process via GraalPy. Requires a real
+ * GraalPy runtime + provisioned {@code python-resources} venv; {@code assumeTrue}-skips
+ * without {@code -Dpymerlin.test.graal=true} so a stock JDK doesn't false-fail.
  *
- * <p><b>Investigation outcome (see PR/commit description for the full trace):</b>
- * {@code compress_data.start} lands exactly on {@code collect_data.start + 5min} — that part
- * of the roadmap's stated invariant holds. But {@code collect_data}'s own span does <i>not</i>
- * end there; it stays open until {@code compress_data} (its {@code spawnWithSpan}/{@code
- * InSpan.Fresh} child) finishes, i.e. {@code collect_data.duration() == 7min}, not 5min. This
- * was traced to {@code EngineScheduler.spawn()} in plandev's {@code SimulationEngine} (shared
- * across all Aerie mission models, not pymerlin-specific): spawning a child — {@code Fresh}
- * span or not — always increments the spawning task's own span contributor count, so the
- * spawning task's span cannot close before every {@code InSpan.Fresh} descendant it ever
- * spawned has also finished.
+ * <p><b>Investigation outcome (see roadmap.md §5.6/§6.6 and commit history for the full
+ * trace):</b> {@code compress_data.start} lands exactly on {@code collect_data.start + 5min}
+ * — that part of the roadmap's originally-stated invariant holds. But {@code collect_data}'s
+ * own span does <i>not</i> end there; it stays open until {@code compress_data} (its
+ * {@code spawnWithSpan}/{@code InSpan.Fresh} child) finishes, i.e. {@code
+ * collect_data.duration() == 7min}, not 5min. This was traced to {@code
+ * EngineScheduler.spawn()} in plandev's {@code SimulationEngine} (shared across all Aerie
+ * mission models, not pymerlin-specific, and unrelated to which bridge runs the Python side):
+ * spawning a child — {@code Fresh} span or not — always increments the spawning task's own
+ * span contributor count, so the spawning task's span cannot close before every {@code
+ * InSpan.Fresh} descendant it ever spawned has also finished.
  *
  * <p>This is not a pymerlin bug: {@code merlin-driver}'s own {@code AnchorSimulationTest
  * #decomposingActivitiesAndAnchors} independently encodes and asserts the identical behavior
  * (a decomposing activity's duration stretching to cover a later {@code InSpan.Fresh} spawn) as
- * expected. So the roadmap's stated invariant — "collect_data's span should end at exactly the
- * same simulated timestamp compress_data's span begins" — does not hold as a general Aerie
- * invariant; it was a mistaken assumption. This test asserts the real, confirmed behavior
- * instead, so it still serves as a regression guard, and flags the roadmap text as needing a
- * correction rather than a code fix.
+ * expected. So the roadmap's originally-stated invariant — "collect_data's span should end at
+ * exactly the same simulated timestamp compress_data's span begins" — does not hold as a
+ * general Aerie invariant; it was a mistaken assumption. This test asserts the real, confirmed
+ * behavior instead, so it still serves as a regression guard.
  */
 public final class SpanTimingTest {
 
     @Test
     public void compressDataSpawnedFromCollectDataHasCorrectSpanTiming() throws ExecutionException, InterruptedException {
-        // Pin explicitly rather than ride PyBridge.create's ambient default (now `graal`,
-        // roadmap §5.5) — this test is specifically about the Phase 1/SubprocessBridge path
-        // per the class doc above, and must keep working on a plain JDK with no GraalPy
-        // runtime, regardless of which bridge production defaults to.
-        System.setProperty("pymerlin.bridge", "subprocess");
+        assumeTrue(Boolean.getBoolean("pymerlin.test.graal"),
+            "requires a real GraalPy runtime + provisioned python-resources venv; "
+            + "skipped without -Dpymerlin.test.graal=true so a stock JDK does not false-fail");
 
         final Instant startTime = Instant.parse("2026-01-01T00:00:00Z");
         final Timestamp start = new Timestamp(startTime);

@@ -13,29 +13,23 @@ import java.nio.file.Path;
 import java.util.Map;
 
 /**
- * {@link PyBridge} implementation that calls the same {@code _server.py} functions
- * in-process via GraalPy, passing {@link Value} objects instead of JSON (roadmap §5.4).
+ * {@link PyBridge} implementation that calls into {@code _server.py} in-process via GraalPy,
+ * passing {@link Value} objects instead of JSON where possible (roadmap §5.4).
  *
- * {@code _send} / {@code _recv} are never called — the server loop in
- * {@code _run_server()} is not used. Instead this bridge directly calls:
- * <ul>
- *   <li>{@code _describe_activity_types(model_class)}</li>
- *   <li>{@code _ModelState.describe_resources()}</li>
- *   <li>{@code _ModelState.get_resource_value(name)}</li>
- *   <li>{@code _ModelState.make_runner(id, name, args)} + {@code runner.start()}</li>
- *   <li>{@code runner.resume()}</li>
- * </ul>
+ * <p>{@code getActivityTypes}/{@code getResources}/{@code getResourceValue} call
+ * {@code _describe_activity_types(model_class)} / {@code _ModelState.describe_resources()} /
+ * {@code _ModelState.get_resource_value(name)} directly. {@link #runActivityDirect} calls
+ * {@code run_activity_direct(model_state, actions, name, args)} (roadmap §6): the Python
+ * activity function runs to completion on the calling {@code ThreadedTask} thread, with
+ * delay/emit/spawn/call routed through the {@link PyActions} host object rather than by
+ * returning yield responses for a Java-side drive loop to interpret — there is no drive
+ * loop, no queue, no background Python thread.
  *
- * The subprocess bridge's {@code _send_runner_state} is deliberately NOT reused here:
- * it writes to stdout via {@code _send}, which is meaningless in-process. Instead
- * {@link #captureRunnerState} reads the runner's state fields directly and assembles
- * the same {@link JsonObject} schema, so {@link ShimModelType}'s {@code driveToCompletion}
- * loop stays unchanged (roadmap §5 "keep every seam"). The consequence — the two bridges'
- * state-capture logic must be kept in sync by hand — is what the Phase 2 byte-identical
- * exit criterion (both bridges → identical results) guards against.
- *
- * Selected by {@code -Dpymerlin.bridge=graal} (the default, since the byte-identical exit
- * criterion has passed against a real GraalPy image — roadmap §5.5; see {@link PyBridge#create}).
+ * <p>Through Phase 2 there was also a request/response {@code runActivity}/{@code resume}
+ * protocol here (mirroring a since-deleted subprocess bridge, kept only so both bridges
+ * could be proven byte-identical — roadmap §5.5, §6.6). It's gone (roadmap §6.3): once the
+ * direct-call path above was proven correct against it, it became unreachable dead weight —
+ * nothing on the Python side implements the old runner protocol it drove either.
  */
 public final class GraalBridge implements PyBridge {
 
@@ -124,32 +118,9 @@ public final class GraalBridge implements PyBridge {
         return result.asString();
     }
 
-    @Override
-    public JsonObject runActivity(String actId, String activityName, Map<String, JsonElement> args) throws Exception {
-        Value makeRunner = modelState().getMember("make_runner");
-        Value pyArgs = jsonArgsToPyDict(args);
-        Value runner = makeRunner.execute(actId, activityName, pyArgs);
-        Value startMethod = runner.getMember("start");
-        startMethod.execute();
-        return captureRunnerState(actId, runner);
-    }
-
-    @Override
-    public JsonObject resume(String actId) throws Exception {
-        Value runner = getActiveRunner(actId);
-        Value resumeMethod = runner.getMember("resume");
-        resumeMethod.execute();
-        return captureRunnerState(actId, runner);
-    }
-
     // ------------------------------------------------------------------
     // Phase 3 (roadmap §6) — direct-call execution
     // ------------------------------------------------------------------
-
-    @Override
-    public boolean isDirect() {
-        return true;
-    }
 
     @Override
     public void runActivityDirect(String actId, String activityName,
@@ -194,103 +165,6 @@ public final class GraalBridge implements PyBridge {
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
-
-    /**
-     * The Python side's {@code _send_runner_state} writes to stdout, which we don't
-     * want. Instead we read the runner's state fields directly and assemble the same
-     * JsonObject that the subprocess bridge would have returned.
-     */
-    private JsonObject captureRunnerState(String actId, Value runner) throws Exception {
-        storeActiveRunner(actId, runner);
-
-        Value status = runner.getMember("status");
-        String statusStr = status.asString();
-
-        JsonObject base = new JsonObject();
-        base.addProperty("id", actId);
-
-        Value emitsMethod = runner.getMember("drain_emits");
-        Value emitsList   = emitsMethod.execute();
-        if (emitsList.hasArrayElements()) {
-            long size = emitsList.getArraySize();
-            if (size > 0) {
-                JsonArray emitsArr = new JsonArray();
-                for (long i = 0; i < size; i++) {
-                    Value pair = emitsList.getArrayElement(i);
-                    JsonObject e = new JsonObject();
-                    e.addProperty("resource", pair.getArrayElement(0).asString());
-                    e.addProperty("value",    pair.getArrayElement(1).asString());
-                    emitsArr.add(e);
-                }
-                base.add("emits", emitsArr);
-            }
-        }
-
-        Value spawnsMethod = runner.getMember("drain_spawns");
-        Value spawnsList   = spawnsMethod.execute();
-        if (spawnsList.hasArrayElements()) {
-            long size = spawnsList.getArraySize();
-            if (size > 0) {
-                JsonArray spawnsArr = new JsonArray();
-                for (long i = 0; i < size; i++) {
-                    Value pair = spawnsList.getArrayElement(i);
-                    JsonObject s = new JsonObject();
-                    s.addProperty("name", pair.getArrayElement(0).asString());
-                    spawnsArr.add(s);
-                }
-                base.add("spawns", spawnsArr);
-            }
-        }
-
-        switch (statusStr) {
-            case "delayed" -> {
-                base.addProperty("op", "delay");
-                long delayUs = runner.getMember("delay_us").asLong();
-                base.addProperty("duration_us", delayUs);
-            }
-            case "awaiting" -> {
-                base.addProperty("op", "wait_until_opaque");
-            }
-            case "completed" -> {
-                base.addProperty("op", "done");
-                removeActiveRunner(actId);
-            }
-            case "running" -> {
-                base.addProperty("op", "running");
-            }
-            case "error" -> {
-                base.addProperty("op", "error");
-                base.addProperty("message", "(GraalBridge: runner in error state)");
-                removeActiveRunner(actId);
-            }
-            default -> {
-                base.addProperty("op", "error");
-                base.addProperty("message", "Unknown runner status: " + statusStr);
-            }
-        }
-        return base;
-    }
-
-    private void storeActiveRunner(String actId, Value runner) {
-        ctx.eval("python",
-            "if '_graal_bridge_runners' not in dir(): _graal_bridge_runners = {}");
-        Value runners = ctx.eval("python", "_graal_bridge_runners");
-        runners.putHashEntry(actId, runner);
-    }
-
-    private Value getActiveRunner(String actId) {
-        Value runners = ctx.eval("python", "_graal_bridge_runners");
-        Value runner  = runners.getHashValue(actId);
-        if (runner == null || runner.isNull()) {
-            throw new RuntimeException("[PyMerlin][GraalBridge] No active runner for id: " + actId);
-        }
-        return runner;
-    }
-
-    private void removeActiveRunner(String actId) {
-        Value runners = ctx.eval("python", "_graal_bridge_runners");
-        runners.removeHashEntry(actId);
-    }
 
     /**
      * Convert a Java {@code Map<String, JsonElement>} of serialized activity args

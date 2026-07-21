@@ -41,7 +41,16 @@ This bundles the Python model files into the JAR alongside the prebuilt shim, an
 
 ## Architecture
 
-### Shim protocol (this branch)
+> **The subprocess description below is superseded (2026-07-21).** As of Phase 3
+> (roadmap.md §6.3/§6.6), the shim no longer spawns a Python subprocess or speaks the
+> newline-delimited-JSON protocol described here — activities run in-process via GraalPy,
+> with Java and Python calling each other directly. `python3`/`pip3 install pymerlin` is
+> also no longer required in the worker/server images for this branch. Kept below for
+> historical context on the architecture's evolution; `roadmap.md` (particularly §2, §5,
+> §6) is the current source of truth. A full rewrite of this section is Phase 5 work
+> (§8, "Document the worker-image contract").
+
+### Shim protocol (superseded — subprocess/JSON, Phase 0–2)
 
 The original py4j architecture (Python owns the process, launches Java as a subprocess) cannot produce a PlanDev-uploadable JAR because PlanDev requires Java to own the process and load mission models via its own classloader.
 

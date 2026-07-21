@@ -36,8 +36,14 @@ dependencies {
     // merlin-framework is NOT in the worker runtime classpath — must be bundled
     implementation name: 'merlin-framework'
     compileOnly name: 'contrib'
-    // gson is not provided by Aerie, so bundle it
-    // (droppable once the JSON protocol is gone — Phase 3, §6.3)
+    // gson is not provided by Aerie, so bundle it. §6.3 listed gson as droppable once the
+    // subprocess JSON protocol was gone; deleting that protocol (roadmap §6.3/§6.6) did NOT
+    // drop it, because it's not subprocess-specific — GraalBridge/ShimModelType still use
+    // JsonObject/JsonElement throughout for activity-type/resource description and argument
+    // marshalling between Java and GraalPy Values. Actually eliminating it means redesigning
+    // that whole marshalling layer to pass Values end-to-end instead — a real, separate
+    // piece of work, not a follow-on of the subprocess deletion. Deferred; flagged here so
+    // it isn't assumed done because §6.3's other items are.
     implementation 'com.google.code.gson:gson:2.11.0'
 
     // --- GraalPy: provided by merlin-worker at runtime — do NOT bundle (§4.3) ---
@@ -98,25 +104,21 @@ test {
         exceptionFormat = 'full'
         showStandardStreams = true
     }
-    // Point the shim at the demo model and the repo's own dev venv so the subprocess
-    // bridge's `import pymerlin` resolves. The graal half additionally needs a
-    // python-resources venv (PYMERLIN_RESOURCES) and a GraalPy-tier JVM; absent those it
-    // is skipped, not failed.
+    // Point the shim at the demo model. Every test needs a real GraalPy runtime + a
+    // provisioned python-resources venv (roadmap §6.3/§6.6 — there is no other path
+    // anymore); absent those, tests assumeTrue-skip rather than fail. `pymerlin.python`
+    // is a dead knob as of that deletion (its only consumer, PythonProcess, is gone).
     systemProperty 'pymerlin.model.ref', file("${rootDir}/../demo/model.py").absolutePath + ':Mission'
-    systemProperty 'pymerlin.python', file("${rootDir}/../venv/bin/python3").absolutePath
 
     // `test` forks a separate JVM — `-D` flags on the `./gradlew` command line only land
     // on the Gradle daemon, NOT that forked JVM, unless explicitly forwarded here. Without
-    // this, `-Dpymerlin.test.graal=true` silently has no effect and the graal parity test
-    // just skips with no error, which is exactly what happened the first time this ran.
+    // this, `-Dpymerlin.test.graal=true` silently has no effect and graal-only tests just
+    // skip with no error, which is exactly what happened the first time this ran.
     if (System.getProperty('pymerlin.test.graal') != null) {
         systemProperty 'pymerlin.test.graal', System.getProperty('pymerlin.test.graal')
     }
     if (System.getProperty('pymerlin.resources') != null) {
         systemProperty 'pymerlin.resources', System.getProperty('pymerlin.resources')
-    }
-    if (System.getProperty('pymerlin.bridge') != null) {
-        systemProperty 'pymerlin.bridge', System.getProperty('pymerlin.bridge')
     }
 }
 
@@ -133,16 +135,16 @@ jar {
     }
 }
 
-// --- Bridge parity: run inside the real image instead of copying its venv out --------
+// --- Image validation: run inside the real image instead of copying its venv out -----
 //
-// Phase 2's exit criterion needs a GraalPy runtime + a real python-resources venv, i.e.
+// Every graal-only test needs a real GraalPy runtime + a real python-resources venv, i.e.
 // the built worker image. GraalPyPreflight (merlin-worker) established the precedent for
 // this exact class of problem -- "the property under test is a property of the built
 // container image", not of the Gradle build -- by being a main() class run via `docker
-// run --entrypoint java` rather than a JUnit test. BridgeParityTest's graal half is the
-// same shape, but it also needs merlin-driver/orchestration-utils/JUnit on the classpath,
-// none of which the runtime image carries. Bundling those in and running via the JUnit
-// Console Launcher gets the same effect without a second main-class harness to maintain.
+// run --entrypoint java` rather than a JUnit test. These tests are the same shape, but
+// also need merlin-driver/orchestration-utils/JUnit on the classpath, none of which the
+// runtime image carries. Bundling those in and running via the JUnit Console Launcher
+// gets the same effect without a second main-class harness to maintain.
 //
 // Usage: run this task, then on the machine hosting the container:
 //   docker exec aerie_merlin_worker_1 rm -rf /tmp/docker-test-bundle   # see note below
@@ -158,11 +160,12 @@ jar {
 //   docker exec aerie_merlin_worker_1 java \
 //     -cp "/tmp/docker-test-bundle/classes:/tmp/docker-test-bundle/lib/*" \
 //     -Dpymerlin.model.ref=/usr/src/pymerlin/demo/model.py:Mission \
-//     -Dpymerlin.python=python3 \
 //     -Dpymerlin.resources=/opt/pymerlin/python-resources \
 //     -Dpymerlin.test.graal=true \
 //     org.junit.platform.console.ConsoleLauncher execute \
-//     --select-class gov.nasa.ammos.aerie.pymerlin.shim.BridgeParityTest --details=verbose
+//     --select-class gov.nasa.ammos.aerie.pymerlin.shim.DemoModelSimulationTest \
+//     --select-class gov.nasa.ammos.aerie.pymerlin.shim.SpanTimingTest \
+//     --select-class gov.nasa.ammos.aerie.pymerlin.shim.CallSemanticsTest --details=verbose
 //
 // Nothing Python-related moves across the container boundary, so none of the SELinux/
 // ownership/symlink-portability problems a venv copy hits are in play here — only class

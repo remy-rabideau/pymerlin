@@ -1,6 +1,5 @@
 package gov.nasa.ammos.aerie.pymerlin.shim;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import gov.nasa.jpl.aerie.merlin.protocol.driver.CellId;
@@ -32,18 +31,18 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.jar.Manifest;
 
-import gov.nasa.jpl.aerie.merlin.framework.Condition;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.delay;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.emit;
-import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.spawn;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.spawnWithSpan;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.callWithSpan;
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.threaded;
-import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.waitUntil;
 
 /**
- * Generic Aerie ModelType implementation that delegates all model behaviour to a
- * Python subprocess via the shim JSON protocol.
+ * Generic Aerie ModelType implementation that delegates all model behaviour to Python,
+ * running in-process via GraalPy ({@link GraalBridge}). Each activity runs on its own
+ * Java {@code ThreadedTask} thread; delay/emit/spawn/call are driven by direct host
+ * callbacks from Python into {@link PyActions} (roadmap §6) — there is no subprocess,
+ * no wire protocol, and no drive loop interpreting yield responses.
  *
  * The model reference (e.g. "path/to/model.py:Mission") is read from the system
  * property {@code pymerlin.model.ref}, which is injected into the JAR manifest
@@ -81,9 +80,9 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     // Bridge is shared across all activity executions for a given simulation.
     private volatile PyBridge bridge = null;
 
-    // Host callback object handed to Python on the Phase 3 (§6) direct-call path. Stateless
-    // (delegates to ModelActions on the calling ThreadedTask thread), so one shared instance
-    // serves every activity. Unused on the subprocess path.
+    // Host callback object handed to Python for every activity execution (roadmap §6).
+    // Stateless (delegates to ModelActions on the calling ThreadedTask thread), so one
+    // shared instance serves every activity.
     private final PyActions pyActions = new PyActions(this);
 
     // -----------------------------------------------------------------
@@ -337,15 +336,9 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
 
         try {
             emit(args, inputTopics.get(activityName));
-            if (bridge.isDirect()) {
-                // Phase 3 (§6): run the Python function directly on this ThreadedTask thread.
-                // delay/emit/spawn/call happen via pyActions callbacks; returns when done.
-                bridge.runActivityDirect(actId, activityName, argsJson, pyActions);
-            } else {
-                // Phase 2 request/response path (SubprocessBridge, the oracle).
-                JsonObject response = bridge.runActivity(actId, activityName, argsJson);
-                driveToCompletion(actId, response);
-            }
+            // Runs the Python function directly on this ThreadedTask thread (roadmap §6).
+            // delay/emit/spawn/call happen via pyActions callbacks; returns when done.
+            bridge.runActivityDirect(actId, activityName, argsJson, pyActions);
             emit(Unit.UNIT, outputTopics.get(activityName));
         } catch (Exception e) {
             throw new RuntimeException("[PyMerlin] Activity " + activityName + " failed: " + e.getMessage(), e);
@@ -383,103 +376,12 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         return result;
     }
 
-    /**
-     * Process yield responses from Python, honouring delay/emit/spawn/wait_until,
-     * until we receive "done" or "error".
-     */
-    private void driveToCompletion(String actId, JsonObject response) throws Exception {
-        while (true) {
-            // Apply any emits first (before honouring the primary yield)
-            if (response.has("emits")) {
-                JsonArray emits = response.getAsJsonArray("emits");
-                for (JsonElement el : emits) {
-                    JsonObject e = el.getAsJsonObject();
-                    String resource = e.get("resource").getAsString();
-                    String value    = e.get("value").getAsString();
-                    applyEmit(resource, value);
-                }
-            }
-
-            // Schedule any spawns
-            if (response.has("spawns")) {
-                JsonArray spawns = response.getAsJsonArray("spawns");
-                for (JsonElement el : spawns) {
-                    JsonObject s = el.getAsJsonObject();
-                    String childName = s.has("name") && !s.get("name").isJsonNull()
-                        ? s.get("name").getAsString() : null;
-                    if (childName != null && inputTopics.containsKey(childName)) {
-                        final String cn = childName;
-                        spawnWithSpan(threaded(() -> runActivity(cn, Map.of())));
-                    }
-                }
-            }
-
-            String op = response.get("op").getAsString();
-
-            switch (op) {
-                case "done" -> { return; }
-
-                case "error" -> {
-                    String msg = response.has("message") ? response.get("message").getAsString() : "(no message)";
-                    throw new RuntimeException("[PyMerlin] Python activity error: " + msg);
-                }
-
-                case "delay" -> {
-                    long micros = response.get("duration_us").getAsLong();
-                    delay(Duration.of(micros, Duration.MICROSECONDS));
-                    response = bridge.resume(actId);
-                }
-
-                case "wait_until" -> {
-                    waitUntil(Condition.TRUE);
-                    response = bridge.resume(actId);
-                }
-
-                case "wait_until_opaque" -> {
-                    response = bridge.resume(actId);
-                    if ("wait_until_opaque".equals(response.get("op").getAsString())) {
-                        delay(Duration.of(1, Duration.MICROSECONDS));
-                    }
-                }
-
-                case "running" -> {
-                    response = bridge.resume(actId);
-                }
-
-                default -> throw new RuntimeException("[PyMerlin] Unknown op from Python: " + op);
-            }
-        }
-    }
-
     void applyEmit(String resourceName, String value) {
         ResourceCell rc = resourceCells.get(resourceName);
         if (rc != null) {
             emit(value, rc.topic());
         } else {
             System.err.println("[PyMerlin] emit for unknown resource: " + resourceName);
-        }
-    }
-
-    private static boolean evaluateCondition(String current, String op, String threshold) {
-        try {
-            double cur = Double.parseDouble(current);
-            double thr = Double.parseDouble(threshold);
-            return switch (op) {
-                case "gt"  -> cur >  thr;
-                case "lt"  -> cur <  thr;
-                case "gte" -> cur >= thr;
-                case "lte" -> cur <= thr;
-                case "eq"  -> cur == thr;
-                case "neq" -> cur != thr;
-                default    -> false;
-            };
-        } catch (NumberFormatException e) {
-            // Fall back to string comparison
-            return switch (op) {
-                case "eq"  -> current.equals(threshold);
-                case "neq" -> !current.equals(threshold);
-                default    -> false;
-            };
         }
     }
 
