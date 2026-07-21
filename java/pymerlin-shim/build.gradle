@@ -132,3 +132,53 @@ jar {
         configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
     }
 }
+
+// --- Bridge parity: run inside the real image instead of copying its venv out --------
+//
+// Phase 2's exit criterion needs a GraalPy runtime + a real python-resources venv, i.e.
+// the built worker image. GraalPyPreflight (merlin-worker) established the precedent for
+// this exact class of problem -- "the property under test is a property of the built
+// container image", not of the Gradle build -- by being a main() class run via `docker
+// run --entrypoint java` rather than a JUnit test. BridgeParityTest's graal half is the
+// same shape, but it also needs merlin-driver/orchestration-utils/JUnit on the classpath,
+// none of which the runtime image carries. Bundling those in and running via the JUnit
+// Console Launcher gets the same effect without a second main-class harness to maintain.
+//
+// Usage: run this task, then on the machine hosting the container:
+//   docker cp build/docker-test-bundle aerie_merlin_worker_1:/tmp/docker-test-bundle
+//   docker exec aerie_merlin_worker_1 java \
+//     -cp "/tmp/docker-test-bundle/classes:/tmp/docker-test-bundle/lib/*" \
+//     -Dpymerlin.model.ref=/usr/src/pymerlin/demo/model.py:Mission \
+//     -Dpymerlin.python=python3 \
+//     -Dpymerlin.resources=/opt/pymerlin/python-resources \
+//     -Dpymerlin.test.graal=true \
+//     org.junit.platform.console.ConsoleLauncher execute \
+//     --select-class gov.nasa.ammos.aerie.pymerlin.shim.BridgeParityTest --details=verbose
+//
+// Nothing Python-related moves across the container boundary, so none of the SELinux/
+// ownership/symlink-portability problems a venv copy hits are in play here — only class
+// files and ordinary Maven jars, which docker cp handles cleanly.
+configurations {
+    consoleLauncher
+}
+
+dependencies {
+    // Matches the junit-jupiter-engine/platform version resolved above (6.0.1) --
+    // verified via `./gradlew :pymerlin-shim:dependencies --configuration testRuntimeClasspath`
+    // rather than assumed, since mismatched engine/launcher versions fail cryptically.
+    consoleLauncher 'org.junit.platform:junit-platform-console-standalone:6.0.1'
+}
+
+tasks.register('dockerTestBundle', Copy) {
+    dependsOn testClasses
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    into "${buildDir}/docker-test-bundle"
+    into('classes') {
+        from sourceSets.main.output
+        from sourceSets.test.output
+    }
+    into('lib') {
+        from configurations.testRuntimeClasspath
+        from configurations.consoleLauncher
+    }
+}
