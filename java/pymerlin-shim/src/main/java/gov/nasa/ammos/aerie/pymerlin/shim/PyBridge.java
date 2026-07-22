@@ -34,6 +34,20 @@ public interface PyBridge extends AutoCloseable {
     JsonObject getActivityTypes() throws Exception;
 
     /**
+     * Query the model's configuration parameters without instantiating it (roadmap §7).
+     * Returns a JsonObject shaped like {@code {"parameters": {name: {type, required, default}}}}
+     * — the {@code get_config} response from {@code _describe_config}.
+     */
+    JsonObject getConfigParameters() throws Exception;
+
+    /**
+     * Set the model configuration (roadmap §7) as a JSON object string, keyed by the model
+     * constructor's post-registrar parameter names. Must be called before any query that
+     * builds the model state (e.g. {@link #getCells}); {@code null} means "use defaults".
+     */
+    void setConfiguration(String configJson) throws Exception;
+
+    /**
      * Query the model's resources after instantiation.
      * Returns the {@code "resources"} JsonObject from the {@code get_resources} response.
      */

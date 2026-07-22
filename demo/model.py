@@ -4,15 +4,22 @@ from pymerlin.model_actions import delay, wait_until, spawn
 
 @MissionModel
 class Mission:
-    def __init__(self, registrar):
+    def __init__(self, registrar, initial_battery_pct: float = 100.0, high_gain: bool = True):
+        # Configuration (roadmap §7): constructor parameters after `registrar` become the
+        # model's simulation-configuration schema, set per-plan in the Aerie UI. Downlink
+        # transmits faster with the high-gain antenna; battery starts at the configured level.
+        self.high_gain = high_gain
+
         self.power_w = registrar.cell(0.0)
         self.data_volume_mb = registrar.linear(0.0)
         self.temperature_c = registrar.cell(20.0)
+        self.battery_pct = registrar.cell(float(initial_battery_pct))
         self.mode = registrar.cell("IDLE")
 
         registrar.resource("/power_w", self.power_w)
         registrar.resource("/data_volume_mb", self.data_volume_mb)
         registrar.resource("/temperature_c", self.temperature_c)
+        registrar.resource("/battery_pct", self.battery_pct)
         registrar.resource("/mode", self.mode)
 
 
@@ -61,11 +68,13 @@ def downlink(mission):
     mission.mode.emit("DOWNLINKING")
     mission.power_w.emit(lambda x: x + 25.0)
 
-    duration_s = 10 * 60
+    # High-gain antenna drains the buffer in half the time (config-driven behavior).
+    minutes = 5 if mission.high_gain else 10
+    duration_s = minutes * 60
     volume = mission.data_volume_mb.get()
     mission.data_volume_mb.set_rate(-volume / duration_s)
 
-    delay("00:10:00")
+    delay(f"00:{minutes:02d}:00")
 
     mission.data_volume_mb.set_rate(0.0)
     mission.data_volume_mb.emit(0.0)

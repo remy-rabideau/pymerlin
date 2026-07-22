@@ -104,6 +104,34 @@ def _describe_activity_types(model_class) -> dict:
     return result
 
 
+def _describe_config(model_class) -> dict:
+    """Describe a model's configuration parameters (roadmap §7 — model configuration).
+
+    A model declares configuration the same way an activity declares parameters: through
+    its constructor signature. Everything after ``self`` and the ``registrar`` (the first
+    positional) is a configuration parameter, with type/required/default inferred exactly
+    like ``_describe_activity_types`` does. A model with only ``(self, registrar)`` has no
+    configuration, so the schema is empty and instantiation is unchanged.
+    """
+    try:
+        sig = inspect.signature(model_class.__init__)
+    except (ValueError, TypeError):
+        return {"parameters": {}}
+    names = [n for n in sig.parameters if n != "self"]
+    config_names = names[1:]  # drop the registrar (first param after self)
+    params = {}
+    for param_name in config_names:
+        param = sig.parameters[param_name]
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        params[param_name] = {
+            "type": _python_type_name(param.annotation, param.default),
+            "required": param.default is inspect.Parameter.empty,
+            "default": None if param.default is inspect.Parameter.empty else param.default,
+        }
+    return {"parameters": params}
+
+
 def _describe_resources(registrar: Registrar) -> dict:
     result = {}
     for name, getter in registrar.resources:
@@ -208,10 +236,19 @@ class _ModelState:
     a string) and as a fallback during model __init__ before java_actions is available.
     """
 
-    def __init__(self, model_class):
+    def __init__(self, model_class, config_json=None):
         self.model_class = model_class
         self._registrar = Registrar()
-        self.model_instance = model_class(self._registrar)
+        # Model configuration (roadmap §7): Java passes the instantiated config as a JSON
+        # object string; keys map to the model constructor's post-registrar parameters.
+        # Absent/blank config → construct with defaults, so unconfigured models are unchanged.
+        config_kwargs = {}
+        if config_json:
+            try:
+                config_kwargs = json.loads(str(config_json)) or {}
+            except (ValueError, TypeError):
+                config_kwargs = {}
+        self.model_instance = model_class(self._registrar, **config_kwargs)
 
         self.cell_values: dict = {}
         self.cell_id_to_resource: dict = {}

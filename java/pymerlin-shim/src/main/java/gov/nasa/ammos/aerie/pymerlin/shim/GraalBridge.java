@@ -36,6 +36,7 @@ public final class GraalBridge implements PyBridge {
     private final Context ctx;
     private final Value   modelClass;
     private final Value   describeActivityTypes;
+    private final Value   describeConfig;
 
     /**
      * The extracted model-source directory this bridge is responsible for deleting on
@@ -54,6 +55,14 @@ public final class GraalBridge implements PyBridge {
     private Value   runActivityDirectFn;
     private boolean closed = false;
 
+    /**
+     * Model configuration as a JSON object string (roadmap §7), set by
+     * {@link #setConfiguration} before the model state is first built. Must be set before
+     * any call that triggers {@link #modelState()}; {@code null} means "construct with
+     * defaults" (unconfigured models).
+     */
+    private String  configJson = null;
+
     public GraalBridge(String modelRef) throws Exception {
         Path srcDir = resolveSrcDir(modelRef);
         this.cleanupDir = findExtractionRoot(srcDir);
@@ -68,12 +77,13 @@ public final class GraalBridge implements PyBridge {
         }
 
         ctx.eval("python", "from pymerlin._internal._server import "
-            + "_load_model_class, _describe_activity_types, _ModelState, run_activity_direct");
+            + "_load_model_class, _describe_activity_types, _describe_config, _ModelState, run_activity_direct");
 
         Value loadModelClass = ctx.eval("python", "_load_model_class");
         modelClass = loadModelClass.execute(modelRef);
 
         describeActivityTypes = ctx.eval("python", "_describe_activity_types");
+        describeConfig        = ctx.eval("python", "_describe_config");
         runActivityDirectFn   = ctx.eval("python", "run_activity_direct");
 
         // Ensure the GraalPy Context and any extracted source dir are released even if
@@ -89,7 +99,8 @@ public final class GraalBridge implements PyBridge {
     private Value modelState() {
         if (modelState == null) {
             Value makeModelState = ctx.eval("python", "_ModelState");
-            modelState = makeModelState.execute(modelClass);
+            // configJson may be null (unconfigured model) -> Python None -> defaults.
+            modelState = makeModelState.execute(modelClass, configJson);
         }
         return modelState;
     }
@@ -102,6 +113,23 @@ public final class GraalBridge implements PyBridge {
     public JsonObject getActivityTypes() throws Exception {
         Value result = describeActivityTypes.execute(modelClass);
         return valueToJsonObject(result);
+    }
+
+    @Override
+    public JsonObject getConfigParameters() throws Exception {
+        // Model-class-only metadata query — never builds the model state, so it is safe on
+        // the one-shot getConfigurationType() path before instantiate() (mirrors getActivityTypes).
+        Value result = describeConfig.execute(modelClass);
+        return valueToJsonObject(result);
+    }
+
+    @Override
+    public void setConfiguration(String configJson) {
+        if (modelState != null) {
+            throw new IllegalStateException(
+                "[PyMerlin] setConfiguration must be called before the model state is built");
+        }
+        this.configJson = configJson;
     }
 
     @Override

@@ -53,7 +53,7 @@ import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.waitUntil;
  * property {@code pymerlin.model.ref}, which is injected into the JAR manifest
  * by {@code pymerlin package} and set at startup.
  */
-public final class ShimModelType implements ModelType<Unit, Unit> {
+public final class ShimModelType implements ModelType<Map<String, SerializedValue>, Unit> {
 
     // --- per-resource cell bookkeeping ---
     // A cell is either discrete (snapshots the last emit'd value, String-backed) or linear
@@ -101,6 +101,10 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     // Per-activity ordered parameter metadata, populated alongside activityNames.
     private final Map<String, List<ParamInfo>> activityParams = new HashMap<>();
 
+    // Model configuration parameter metadata (roadmap §7), populated by the one-shot
+    // getConfigurationType() path or during instantiate(); null until first fetched.
+    private volatile List<ParamInfo> configParams = null;
+
     private final AtomicLong activityCounter = new AtomicLong(0);
 
     // Bridge is shared across all activity executions for a given simulation.
@@ -144,23 +148,42 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     }
 
     @Override
-    public InputType<Unit> getConfigurationType() {
-        return new InputType<>() {
-            @Override public List<InputType.Parameter> getParameters() { return List.of(); }
-            @Override public List<String> getRequiredParameters()      { return List.of(); }
-            @Override public Unit instantiate(Map<String, SerializedValue> arguments) { return Unit.UNIT; }
-            @Override public Map<String, SerializedValue> getArguments(Unit value) { return Map.of(); }
-            @Override public List<InputType.ValidationNotice> getValidationFailures(Unit value) { return List.of(); }
-        };
+    public InputType<Map<String, SerializedValue>> getConfigurationType() {
+        // Aerie may call this on a fresh instance (before instantiate()) to store the
+        // configuration schema. Fetch config params via a one-shot bridge if needed.
+        if (configParams == null) {
+            fetchConfigParams();
+        }
+        return configInputType();
+    }
+
+    private synchronized void fetchConfigParams() {
+        if (configParams != null) return; // double-checked
+        String modelRef = resolveModelRef();
+        try (PyBridge oneShot = PyBridge.create(modelRef)) {
+            configParams = parseParams(oneShot.getConfigParameters());
+        } catch (Exception e) {
+            throw new RuntimeException("[PyMerlin] Could not fetch configuration parameters: " + e.getMessage(), e);
+        }
     }
 
     @Override
-    public Unit instantiate(Instant planStart, Unit configuration, Initializer builder) {
+    public Unit instantiate(Instant planStart, Map<String, SerializedValue> configuration, Initializer builder) {
         String modelRef = resolveModelRef();
         try {
             bridge = PyBridge.create(modelRef);
+            // Config must be set before any query that builds the Python model state
+            // (getCells below triggers it). Serialize the instantiated config to JSON.
+            bridge.setConfiguration(configToJson(configuration));
         } catch (Exception e) {
             throw new RuntimeException("[PyMerlin] Failed to start bridge: " + e.getMessage(), e);
+        }
+
+        // Populate config param metadata from the live bridge (avoids a second startup).
+        try {
+            configParams = parseParams(bridge.getConfigParameters());
+        } catch (Exception e) {
+            throw new RuntimeException("[PyMerlin] get_config failed: " + e.getMessage(), e);
         }
 
         // Populate activityNames from the live bridge (avoids a second startup).
@@ -599,6 +622,64 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
                 return arr;
             }
         });
+    }
+
+    /** Serialize an instantiated configuration to a JSON object string for Python. */
+    private static String configToJson(Map<String, SerializedValue> config) {
+        JsonObject obj = new JsonObject();
+        if (config != null) {
+            for (Map.Entry<String, SerializedValue> e : config.entrySet()) {
+                obj.add(e.getKey(), serializedValueToJson(e.getValue()));
+            }
+        }
+        return obj.toString();
+    }
+
+    /**
+     * The model configuration InputType (roadmap §7). Structurally identical to
+     * {@link #activityInputType}, but backed by {@link #configParams} — the model
+     * constructor's post-registrar parameters — instead of a named activity's parameters.
+     */
+    private InputType<Map<String, SerializedValue>> configInputType() {
+        return new InputType<>() {
+            private List<ParamInfo> params() {
+                return configParams != null ? configParams : List.of();
+            }
+
+            @Override
+            public List<InputType.Parameter> getParameters() {
+                List<InputType.Parameter> result = new ArrayList<>();
+                for (ParamInfo p : params()) result.add(new InputType.Parameter(p.name(), p.schema()));
+                return result;
+            }
+
+            @Override
+            public List<String> getRequiredParameters() {
+                List<String> result = new ArrayList<>();
+                for (ParamInfo p : params()) if (p.required()) result.add(p.name());
+                return result;
+            }
+
+            @Override
+            public Map<String, SerializedValue> instantiate(Map<String, SerializedValue> args) {
+                Map<String, SerializedValue> merged = new LinkedHashMap<>();
+                for (ParamInfo p : params()) {
+                    SerializedValue val = args.containsKey(p.name()) ? args.get(p.name())
+                                       : p.defaultValue();
+                    if (val != null) merged.put(p.name(), coerceToSchema(val, p.schema()));
+                }
+                for (Map.Entry<String, SerializedValue> e : args.entrySet()) {
+                    merged.putIfAbsent(e.getKey(), e.getValue());
+                }
+                return merged;
+            }
+
+            @Override
+            public Map<String, SerializedValue> getArguments(Map<String, SerializedValue> v) { return v; }
+
+            @Override
+            public List<InputType.ValidationNotice> getValidationFailures(Map<String, SerializedValue> v) { return List.of(); }
+        };
     }
 
     private InputType<Map<String, SerializedValue>> activityInputType(String activityName) {
