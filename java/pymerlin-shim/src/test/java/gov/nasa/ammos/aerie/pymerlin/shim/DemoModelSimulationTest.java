@@ -2,7 +2,10 @@ package gov.nasa.ammos.aerie.pymerlin.shim;
 
 import gov.nasa.jpl.aerie.merlin.driver.MissionModel;
 import gov.nasa.jpl.aerie.merlin.driver.SimulationResults;
+import gov.nasa.jpl.aerie.merlin.driver.engine.ProfileSegment;
+import gov.nasa.jpl.aerie.merlin.driver.resources.ResourceProfile;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Duration;
+import gov.nasa.jpl.aerie.merlin.protocol.types.RealDynamics;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Unit;
 import gov.nasa.jpl.aerie.orchestration.simulation.SimulationUtility;
 import gov.nasa.jpl.aerie.types.ActivityDirective;
@@ -101,5 +104,77 @@ public final class DemoModelSimulationTest {
         assertEquals(true, types.contains("compress_data"), "spawned compress_data should have simulated");
 
         System.out.println("[DemoModelSimulationTest] canonical result:\n" + canonicalize(results));
+    }
+
+    /**
+     * Regression for roadmap §7.2: {@code /data_volume_mb} is a linear cell, so during
+     * {@code downlink} it must ramp down continuously (a real-profile segment with a
+     * negative rate) rather than stepping to zero only when the activity ends. Schedules
+     * {@code collect_data} at t=0 (fills the buffer to 614.4 MB by t=7min after the spawned
+     * {@code compress_data}'s {@code *0.6}) and {@code downlink} at t=8min, then asserts the
+     * value ramps linearly at two sample points during the 10-minute drain.
+     */
+    @Test
+    public void downlinkRampsDataVolumeDownContinuously() throws Exception {
+        assumeTrue(Boolean.getBoolean("pymerlin.test.graal"),
+            "requires a real GraalPy runtime + provisioned python-resources venv; "
+            + "skipped without -Dpymerlin.test.graal=true so a stock JDK does not false-fail");
+
+        final long downlinkStartS = 8 * 60;   // 480s — after compress_data settles the buffer
+        final Map<ActivityDirectiveId, ActivityDirective> schedule = new HashMap<>();
+        schedule.put(new ActivityDirectiveId(0),
+            new ActivityDirective(Duration.ZERO, "collect_data", Map.of(), null, true));
+        schedule.put(new ActivityDirectiveId(1),
+            new ActivityDirective(Duration.of(downlinkStartS, Duration.SECONDS), "downlink", Map.of(), null, true));
+
+        final Timestamp start = new Timestamp(START);
+        final Timestamp end = new Timestamp(START.plusSeconds(1200));
+        final Plan plan = new Plan("plan", start, end, schedule, Map.of());
+        final MissionModel<Unit> model =
+            SimulationUtility.instantiateMissionModel(new ShimModelType(), START, Unit.UNIT);
+
+        final SimulationResults results;
+        try (var simUtil = new SimulationUtility()) {
+            results = simUtil.simulate(model, plan).get();
+        }
+
+        final ResourceProfile<RealDynamics> profile = results.realProfiles.get("/data_volume_mb");
+        assertFalse(profile == null, "/data_volume_mb should be a real profile (linear cell)");
+
+        // The buffer holds 1024 MB at t=5min, then compress_data's *0.6 leaves 614.4 MB by t=7min.
+        final double volumeAtDownlinkStart = 1024.0 * 0.6;
+        final double expectedRate = -volumeAtDownlinkStart / (10 * 60);
+
+        // Core fix: some segment during the drain has a genuinely negative rate (a ramp, not a step).
+        boolean sawNegativeRate = false;
+        for (final ProfileSegment<RealDynamics> seg : profile.segments()) {
+            if (seg.dynamics().rate < -1e-9) { sawNegativeRate = true; break; }
+        }
+        assertEquals(true, sawNegativeRate,
+            "data_volume_mb should ramp down (negative-rate segment) during downlink, not step");
+
+        // Sample the ramp at 1 and 5 minutes into the drain.
+        final double at1min = evalReal(profile, downlinkStartS + 60);
+        final double at5min = evalReal(profile, downlinkStartS + 300);
+        assertEquals(volumeAtDownlinkStart + expectedRate * 60, at1min, 1.0,
+            "value 1min into downlink should follow the linear ramp");
+        assertEquals(volumeAtDownlinkStart + expectedRate * 300, at5min, 1.0,
+            "value 5min into downlink should follow the linear ramp");
+    }
+
+    /** Evaluate a real profile at {@code targetSeconds} past the profile start. */
+    private static double evalReal(ResourceProfile<RealDynamics> profile, long targetSeconds) {
+        Duration cursor = Duration.ZERO;
+        final Duration target = Duration.of(targetSeconds, Duration.SECONDS);
+        for (final ProfileSegment<RealDynamics> seg : profile.segments()) {
+            final Duration segEnd = cursor.plus(seg.extent());
+            if (target.noLongerThan(segEnd) || seg.extent().isEqualTo(Duration.ZERO)) {
+                final double into = target.minus(cursor).ratioOver(Duration.SECOND);
+                return seg.dynamics().initial + seg.dynamics().rate * into;
+            }
+            cursor = segEnd;
+        }
+        final ProfileSegment<RealDynamics> last = profile.segments().get(profile.segments().size() - 1);
+        return last.dynamics().initial;
     }
 }

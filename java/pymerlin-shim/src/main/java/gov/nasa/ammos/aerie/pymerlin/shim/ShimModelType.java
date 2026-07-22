@@ -12,6 +12,7 @@ import gov.nasa.jpl.aerie.merlin.protocol.model.OutputType;
 import gov.nasa.jpl.aerie.merlin.protocol.model.Resource;
 import gov.nasa.jpl.aerie.merlin.protocol.model.TaskFactory;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Duration;
+import gov.nasa.jpl.aerie.merlin.protocol.types.RealDynamics;
 import gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Unit;
 import gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema;
@@ -55,17 +56,34 @@ import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.waitUntil;
 public final class ShimModelType implements ModelType<Unit, Unit> {
 
     // --- per-resource cell bookkeeping ---
-    private record ResourceCell(
+    // A cell is either discrete (snapshots the last emit'd value, String-backed) or linear
+    // (continuously integrates value + rate·t, backed by RealDynamics — roadmap §7.2).
+    private sealed interface Cell permits DiscreteCell, LinearCell {}
+
+    private record DiscreteCell(
         Topic<String> topic,
         CellId<String[]> cellId,
         String valueType   // "float", "int", "bool", or "str"
-    ) {}
+    ) implements Cell {}
 
-    private final Map<String, ResourceCell> resourceCells = new HashMap<>();
+    private record LinearCell(
+        Topic<LinearEffect> topic,
+        CellId<double[]> cellId   // state is [value, rate]
+    ) implements Cell {}
+
+    /**
+     * A discrete effect on a {@link LinearCell}. Either component is optional: a discrete
+     * {@code emit} sets the value (keeping the rate), {@code set_rate} sets the rate
+     * (keeping the ramped value). Last-writer-wins on composition, mirroring the discrete
+     * String cell's trait — pymerlin runs one activity per cell per tick.
+     */
+    private record LinearEffect(Double newValue, Double newRate) {}
+
+    private final Map<String, Cell> resourceCells = new HashMap<>();
 
     // Indexed cell list — Python CellRef references cells by integer index (Phase 4, §7).
     // Populated during instantiate(); order matches the order Python's registrar.cells sees them.
-    private final List<ResourceCell> cellsByIndex = new ArrayList<>();
+    private final List<Cell> cellsByIndex = new ArrayList<>();
     private final Map<String, Topic<Map<String, SerializedValue>>> inputTopics  = new HashMap<>();
     private final Map<String, Topic<Unit>>                         outputTopics = new HashMap<>();
 
@@ -179,9 +197,34 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
                     String resName = (cellMeta.has("resource") && !cellMeta.get("resource").isJsonNull())
                         ? cellMeta.get("resource").getAsString() : null;
 
+                    if ("linear".equals(vtype)) {
+                        // Continuously-integrating cell (roadmap §7.2): value ramps by `rate`
+                        // per second between events, exposed as an Aerie RealDynamics resource.
+                        double initial = parseDoubleOr(initialValue, 0.0);
+                        double rate = cellMeta.has("rate") ? parseDoubleOr(cellMeta.get("rate").getAsString(), 0.0) : 0.0;
+                        Topic<LinearEffect> topic = new Topic<>();
+                        CellId<double[]> cellId = allocateLinearCell(builder, initial, rate, topic);
+                        LinearCell lc = new LinearCell(topic, cellId);
+                        cellsByIndex.add(lc);
+
+                        if (resName != null) {
+                            resourceCells.put(resName, lc);
+                            final CellId<double[]> capturedCell = cellId;
+                            builder.resource(resName, new Resource<RealDynamics>() {
+                                @Override public String getType() { return "real"; }
+                                @Override public OutputType<RealDynamics> getOutputType() { return realOutputType(); }
+                                @Override public RealDynamics getDynamics(gov.nasa.jpl.aerie.merlin.protocol.driver.Querier q) {
+                                    double[] s = q.getState(capturedCell);
+                                    return RealDynamics.linear(s[0], s[1]);
+                                }
+                            });
+                        }
+                        continue;
+                    }
+
                     Topic<String> topic = new Topic<>();
                     CellId<String[]> cellId = allocateStringCell(builder, initialValue, topic);
-                    ResourceCell rc = new ResourceCell(topic, cellId, vtype);
+                    DiscreteCell rc = new DiscreteCell(topic, cellId, vtype);
                     cellsByIndex.add(rc);
 
                     if (resName != null) {
@@ -391,9 +434,11 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     }
 
     void applyEmit(String resourceName, String value) {
-        ResourceCell rc = resourceCells.get(resourceName);
-        if (rc != null) {
-            emit(value, rc.topic());
+        Cell cell = resourceCells.get(resourceName);
+        if (cell instanceof DiscreteCell dc) {
+            emit(value, dc.topic());
+        } else if (cell instanceof LinearCell lc) {
+            emit(new LinearEffect(parseDoubleOr(value, 0.0), null), lc.topic());
         } else {
             System.err.println("[PyMerlin] emit for unknown resource: " + resourceName);
         }
@@ -404,13 +449,31 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     // -----------------------------------------------------------------
 
     String directAsk(int cellIndex) {
-        ResourceCell rc = cellsByIndex.get(cellIndex);
-        return ask(rc.cellId())[0];
+        Cell cell = cellsByIndex.get(cellIndex);
+        if (cell instanceof LinearCell lc) {
+            // Value at the current instant — the engine has already stepped the cell to now.
+            return Double.toString(ask(lc.cellId())[0]);
+        }
+        return ask(((DiscreteCell) cell).cellId())[0];
     }
 
     void directEmitCell(int cellIndex, String value) {
-        ResourceCell rc = cellsByIndex.get(cellIndex);
-        emit(value, rc.topic());
+        Cell cell = cellsByIndex.get(cellIndex);
+        if (cell instanceof LinearCell lc) {
+            // Discrete jump of the integrated value (rate unchanged).
+            emit(new LinearEffect(parseDoubleOr(value, 0.0), null), lc.topic());
+        } else {
+            emit(value, ((DiscreteCell) cell).topic());
+        }
+    }
+
+    void directSetRate(int cellIndex, double rate) {
+        Cell cell = cellsByIndex.get(cellIndex);
+        if (cell instanceof LinearCell lc) {
+            emit(new LinearEffect(null, rate), lc.topic());
+        } else {
+            System.err.println("[PyMerlin] set_rate on non-linear cell index: " + cellIndex);
+        }
     }
 
     void directWaitUntil(BooleanSupplier pyCondition) {
@@ -422,6 +485,49 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
     // -----------------------------------------------------------------
     // Cell allocation
     // -----------------------------------------------------------------
+
+    /**
+     * Allocate a continuously-integrating cell (roadmap §7.2). State is {@code [value, rate]};
+     * {@code step} advances {@code value += rate · elapsedSeconds} before any query, exactly
+     * like {@code contrib}'s {@code LinearIntegrationCell}, so a {@code RealDynamics} resource
+     * reading this cell ramps smoothly between discrete effects instead of stepping.
+     */
+    private static CellId<double[]> allocateLinearCell(Initializer builder, double initial, double rate, Topic<LinearEffect> topic) {
+        return builder.allocate(
+            new double[]{initial, rate},
+            new gov.nasa.jpl.aerie.merlin.protocol.model.CellType<LinearEffect, double[]>() {
+                @Override
+                public gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<LinearEffect> getEffectType() {
+                    return new gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<>() {
+                        @Override public LinearEffect empty() { return new LinearEffect(null, null); }
+                        @Override public LinearEffect sequentially(LinearEffect a, LinearEffect b) { return combine(a, b); }
+                        @Override public LinearEffect concurrently(LinearEffect a, LinearEffect b) { return combine(a, b); }
+                        private LinearEffect combine(LinearEffect a, LinearEffect b) {
+                            return new LinearEffect(
+                                b.newValue() != null ? b.newValue() : a.newValue(),
+                                b.newRate()  != null ? b.newRate()  : a.newRate());
+                        }
+                    };
+                }
+                @Override public void apply(double[] state, LinearEffect effect) {
+                    if (effect.newValue() != null) state[0] = effect.newValue();
+                    if (effect.newRate()  != null) state[1] = effect.newRate();
+                }
+                @Override public double[] duplicate(double[] state) { return new double[]{state[0], state[1]}; }
+                @Override public void step(double[] state, Duration elapsed) {
+                    state[0] += state[1] * elapsed.ratioOver(Duration.SECOND);
+                }
+            },
+            e -> e,
+            topic
+        );
+    }
+
+    private static double parseDoubleOr(String s, double fallback) {
+        if (s == null) return fallback;
+        try { return Double.parseDouble(s.trim()); }
+        catch (NumberFormatException e) { return fallback; }
+    }
 
     private static CellId<String[]> allocateStringCell(Initializer builder, String initial, Topic<String> topic) {
         return builder.allocate(
@@ -591,6 +697,23 @@ public final class ShimModelType implements ModelType<Unit, Unit> {
         return new OutputType<>() {
             @Override public ValueSchema getSchema()           { return ValueSchema.ofStruct(Map.of()); }
             @Override public SerializedValue serialize(Unit v) { return SerializedValue.of(Map.of()); }
+        };
+    }
+
+    /** Real-resource output type: struct {initial: REAL, rate: REAL}, mirroring
+     *  merlin-framework's {@code Registrar.real(...)} so the driver emits real profiles. */
+    private static OutputType<RealDynamics> realOutputType() {
+        return new OutputType<>() {
+            @Override public ValueSchema getSchema() {
+                return ValueSchema.ofStruct(Map.of(
+                    "initial", ValueSchema.REAL,
+                    "rate", ValueSchema.REAL));
+            }
+            @Override public SerializedValue serialize(RealDynamics d) {
+                return SerializedValue.of(Map.of(
+                    "initial", SerializedValue.of(d.initial),
+                    "rate", SerializedValue.of(d.rate)));
+            }
         };
     }
 

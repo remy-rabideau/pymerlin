@@ -240,6 +240,16 @@ class _ModelState:
         for cell_ref, initial_value, _evolution in self._registrar.cells:
             current = _globals.cell_values_by_id.get(cell_ref.id, initial_value)
             res_name = self.cell_id_to_resource.get(id(cell_ref))
+            if getattr(cell_ref, "_is_linear", False):
+                # Continuously-integrating cell (roadmap §7.2): Java backs it with a
+                # RealDynamics resource that ramps by `rate` per second between events.
+                cells.append({
+                    "type": "linear",
+                    "initial": str(float(current)),
+                    "rate": str(float(getattr(cell_ref, "_initial_rate", 0.0))),
+                    "resource": res_name,
+                })
+                continue
             if isinstance(current, bool):
                 vtype = "bool"
             elif isinstance(current, int):

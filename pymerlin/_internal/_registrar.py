@@ -14,6 +14,20 @@ class Registrar:
         self.cells.append((ref, initial_value, evolution))
         return ref
 
+    def linear(self, initial_value, rate=0.0):
+        """
+        Declare a continuously-integrating (linear) cell (roadmap §7.2).
+
+        The cell's value evolves as ``value + rate * elapsed_seconds`` — Java backs it
+        with an Aerie ``RealDynamics`` resource that ramps between discrete events instead
+        of snapshotting the last emitted value. ``set_rate(...)`` changes the slope (e.g.
+        start/stop draining); ``emit(...)`` still applies a discrete jump to the value.
+        Scoped to linear dynamics only, which is all Aerie's ``RealDynamics`` can represent.
+        """
+        ref = LinearCellRef(float(rate))
+        self.cells.append((ref, float(initial_value), None))
+        return ref
+
     def resource(self, name, f):
         """
         Declare a resource to track
@@ -151,6 +165,32 @@ class CellRef(Gettable):
     def __imod__(self, other):
         self.emit(lambda x: x % other)
         return self
+
+class LinearCellRef(CellRef):
+    """
+    A continuously-integrating cell (roadmap §7.2), declared via ``registrar.linear``.
+
+    Behaves like a normal :class:`CellRef` for discrete reads/writes (``get``/``emit``),
+    but additionally carries a *rate*: under Java-backed execution the cell's value ramps
+    as ``value + rate * elapsed_seconds`` between events, wired to an Aerie
+    ``RealDynamics`` resource. ``set_rate`` changes the slope as a discrete event; the
+    continuously-integrating value itself is owned by the Java cell (its ``step`` hook),
+    so ``get`` always reflects the ramped value at the current instant.
+    """
+
+    def __init__(self, initial_rate=0.0):
+        super().__init__()
+        self._is_linear = True
+        self._initial_rate = float(initial_rate)
+        self._value_type = float
+
+    def set_rate(self, rate):
+        """Set the cell's rate of change (units per second) as a discrete event."""
+        rate = float(rate)
+        ja = _globals.java_actions
+        if ja is not None and self._cell_index is not None:
+            ja.setRate(self._cell_index, rate)
+
 
 def set_value(new_value):
     return lambda x: new_value

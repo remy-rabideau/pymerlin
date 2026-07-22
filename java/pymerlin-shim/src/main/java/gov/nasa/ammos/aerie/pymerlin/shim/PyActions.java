@@ -51,6 +51,10 @@ public final class PyActions {
         shim.directEmitCell(cellIndex, value);
     }
 
+    public void setRate(int cellIndex, double rate) {
+        shim.directSetRate(cellIndex, rate);
+    }
+
     public void waitUntil(BooleanSupplier condition) {
         shim.directWaitUntil(condition);
     }
