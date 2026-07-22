@@ -6,6 +6,7 @@ import gov.nasa.jpl.aerie.merlin.driver.engine.ProfileSegment;
 import gov.nasa.jpl.aerie.merlin.driver.resources.ResourceProfile;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Duration;
 import gov.nasa.jpl.aerie.merlin.protocol.types.RealDynamics;
+import gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Unit;
 import gov.nasa.jpl.aerie.orchestration.simulation.SimulationUtility;
 import gov.nasa.jpl.aerie.types.ActivityDirective;
@@ -89,7 +90,7 @@ public final class DemoModelSimulationTest {
         final Timestamp end = new Timestamp(START.plusSeconds(600));
         final Plan plan = new Plan("plan", start, end, demoSchedule(), Map.of());
         final MissionModel<Unit> model =
-            SimulationUtility.instantiateMissionModel(new ShimModelType(), START, Unit.UNIT);
+            SimulationUtility.instantiateMissionModel(new ShimModelType(), START, Map.of());
 
         final SimulationResults results;
         try (var simUtil = new SimulationUtility()) {
@@ -130,8 +131,12 @@ public final class DemoModelSimulationTest {
         final Timestamp start = new Timestamp(START);
         final Timestamp end = new Timestamp(START.plusSeconds(1200));
         final Plan plan = new Plan("plan", start, end, schedule, Map.of());
+        // Configure the low-gain antenna (roadmap §7): downlink then drains over 10 minutes,
+        // which this test's rate/sample-point assertions below depend on. Also exercises the
+        // config path end-to-end — a bool config parameter changing model behavior.
         final MissionModel<Unit> model =
-            SimulationUtility.instantiateMissionModel(new ShimModelType(), START, Unit.UNIT);
+            SimulationUtility.instantiateMissionModel(
+                new ShimModelType(), START, Map.of("high_gain", SerializedValue.of(false)));
 
         final SimulationResults results;
         try (var simUtil = new SimulationUtility()) {
@@ -160,6 +165,32 @@ public final class DemoModelSimulationTest {
             "value 1min into downlink should follow the linear ramp");
         assertEquals(volumeAtDownlinkStart + expectedRate * 300, at5min, 1.0,
             "value 5min into downlink should follow the linear ramp");
+    }
+
+    /**
+     * Regression for roadmap §7 model configuration: the model constructor's post-registrar
+     * parameters become the configuration schema. {@code Mission.__init__(self, registrar,
+     * initial_battery_pct=100.0, high_gain=True)} should surface exactly those two, with the
+     * right types and neither marked required (both have defaults).
+     */
+    @Test
+    public void configurationSchemaExposesModelConstructorParams() {
+        assumeTrue(Boolean.getBoolean("pymerlin.test.graal"),
+            "requires a real GraalPy runtime + provisioned python-resources venv; "
+            + "skipped without -Dpymerlin.test.graal=true so a stock JDK does not false-fail");
+
+        final var configType = new ShimModelType().getConfigurationType();
+
+        final Map<String, gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema> params = new HashMap<>();
+        configType.getParameters().forEach(p -> params.put(p.name(), p.schema()));
+
+        assertEquals(2, params.size(), "expected exactly the two constructor config params");
+        assertEquals(gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema.REAL, params.get("initial_battery_pct"),
+            "initial_battery_pct should be a REAL config parameter");
+        assertEquals(gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema.BOOLEAN, params.get("high_gain"),
+            "high_gain should be a BOOLEAN config parameter");
+        assertEquals(true, configType.getRequiredParameters().isEmpty(),
+            "both config params have defaults, so none should be required");
     }
 
     /** Evaluate a real profile at {@code targetSeconds} past the profile start. */

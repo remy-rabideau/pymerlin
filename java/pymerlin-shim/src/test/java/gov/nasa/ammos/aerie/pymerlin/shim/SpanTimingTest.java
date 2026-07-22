@@ -70,7 +70,7 @@ public final class SpanTimingTest {
         final Plan plan = new Plan("plan", start, end, schedule, Map.of());
 
         final MissionModel<Unit> missionModel =
-            SimulationUtility.instantiateMissionModel(new ShimModelType(), startTime, Unit.UNIT);
+            SimulationUtility.instantiateMissionModel(new ShimModelType(), startTime, Map.of());
 
         final SimulationResults results;
         try (var simUtil = new SimulationUtility()) {
