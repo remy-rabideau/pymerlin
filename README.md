@@ -73,9 +73,25 @@ produces (external-directory mode) is:
 
 **Packages available to a model:** the pre-built venv contains exactly **`pymerlin`,
 `numpy`, and `spiceypy`** (a fixed set — see `roadmap.md` §11.2). `pymerlin` is installed
-from local source in this checkout, not from PyPI. `numpy`/`spiceypy` are installed with
-GraalPy's own patched `pip` against its wheel repository — CPython wheels from PyPI are **not**
-binary-compatible with GraalPy and cannot be used.
+from a pinned git ref (`PYMERLIN_GIT_URL`/`PYMERLIN_REF` in `install.sh`) — the image build
+no longer needs a local pymerlin checkout alongside `plandev/`, so a model author working
+from just `pip install pymerlin` and a standalone model file never needs this repo either.
+`numpy`/`spiceypy` are installed with GraalPy's own patched `pip` against its wheel
+repository — CPython wheels from PyPI are **not** binary-compatible with GraalPy and cannot
+be used.
+
+**Version compatibility.** The pymerlin ref a worker image is built against must ship a
+`pymerlin-shim.jar` compiled against the *same* `graalPyVersion` as that image's own GraalPy
+runtime (`GRAALPY_VERSION` in the Dockerfile / `graalPyVersion` in `gradle.properties`) —
+mismatched, the shim compiles fine and fails confusingly at simulation time against an API
+the worker doesn't provide (see `pymerlin-shim/build.gradle`'s `graalPyVersion` comment).
+Decoupling the image build from a local checkout removes the accidental guarantee that these
+two always moved together, so this needs to be checked explicitly now: bumping
+`install.sh`'s `PYMERLIN_REF` means confirming the pymerlin-shim `build.gradle` at that ref
+still matches `GRAALPY_VERSION`, and vice versa. `graalpy-preflight.yml`'s "Check GraalPy
+versions agree" step automates half of this (a given pymerlin ref's shim version against
+`GRAALPY_VERSION`); there is no equivalent automated check yet that `install.sh`'s *currently
+pinned* `PYMERLIN_REF` specifically satisfies it.
 
 **If your model needs a package that isn't in the venv:** a missing dependency is an
 **image rebuild**, not a JAR change. Add the package to the install step in
