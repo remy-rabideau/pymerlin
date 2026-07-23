@@ -3,7 +3,6 @@ Command-line interface for PyMerlin.
 """
 
 import argparse
-import os
 import shutil
 import sys
 import tempfile
@@ -14,13 +13,57 @@ from pathlib import Path
 _SHIM_JAR = Path(__file__).parent / "jars" / "pymerlin-shim.jar"
 
 
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("pymerlin")
+    except Exception:
+        return "0.1.0-dev"
+
+
 def main():
-    parser = argparse.ArgumentParser(prog="pymerlin")
+    parser = argparse.ArgumentParser(
+        prog="pymerlin",
+        description=(
+            "pymerlin — Python mission modeling framework for PlanDev / Aerie.\n"
+            "\n"
+            "Write discrete-event simulation models in Python, then package them\n"
+            "as uploadable PlanDev mission model JARs. At simulation time the\n"
+            "model runs in-process on the PlanDev worker's embedded GraalPy\n"
+            "interpreter — no subprocess, no serialization protocol."
+        ),
+        epilog=(
+            "examples:\n"
+            "  pymerlin package --model demo/model.py:Mission --out mission-model.jar\n"
+            "\n"
+            "documentation: https://mattdailis.github.io/pymerlin\n"
+            "source:        https://github.com/mattdailis/pymerlin"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {_get_version()}"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     pkg_parser = subparsers.add_parser(
         "package",
-        help="Package a Python model into an Aerie-compatible mission model JAR"
+        help="Package a Python model into an Aerie-compatible mission model JAR",
+        description=(
+            "Bundle a Python model file (and its package, if applicable) into a\n"
+            "PlanDev-uploadable mission model JAR. The resulting JAR contains the\n"
+            "prebuilt pymerlin-shim classes, your model source, and a manifest\n"
+            "entry pointing at the model class."
+        ),
+        epilog=(
+            "examples:\n"
+            "  # Single-file model\n"
+            "  pymerlin package --model model.py:Mission --out mission-model.jar\n"
+            "\n"
+            "  # Package-based model (bundles the whole package directory)\n"
+            "  pymerlin package --model my_pkg/model.py:Mission --out mission-model.jar"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     pkg_parser.add_argument(
         "--model",
@@ -51,7 +94,7 @@ def _package(model_ref: str, output_jar: str, bundle_model: bool = True):
         sys.exit(1)
 
     if ":" not in model_ref:
-        print(f"[pymerlin] ERROR: --model must be 'path/to/file.py:ClassName'", file=sys.stderr)
+        print("[pymerlin] ERROR: --model must be 'path/to/file.py:ClassName'", file=sys.stderr)
         sys.exit(1)
 
     model_file_path, class_name = model_ref.rsplit(":", 1)
