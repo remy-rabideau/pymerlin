@@ -38,6 +38,7 @@ glossary
 :hidden:
 
 architecture
+shim-protocol
 developer
 contribute
 license

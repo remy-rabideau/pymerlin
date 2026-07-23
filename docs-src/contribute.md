@@ -1,7 +1,7 @@
 # Contributing
 
 :::{note}
-These guidelines are copied from [Aerie's contributing guidelines](https://github.com/NASA-AMMOS/aerie/blob/develop/docs/CONTRIBUTING.md).
+These guidelines are copied from [PlanDev's contributing guidelines](https://github.com/NASA-AMMOS/aerie/blob/develop/docs/CONTRIBUTING.md).
 :::
 
 We would love for you to contribute to pymerlin and help make it even better than it is today! As a contributor, here are the guidelines we would like you to follow:
@@ -15,7 +15,7 @@ We would love for you to contribute to pymerlin and help make it even better tha
 (question)=
 ## Got a Question or Problem?
 
-If you would like to chat about the question in real-time, you can reach out via [the Aerie users Slack channel](https://join.slack.com/t/nasa-ammos/shared_invite/zt-1mlgmk5c2-MgqVSyKzVRUWrXy87FNqPw).
+If you would like to chat about the question in real-time, you can reach out via [the PlanDev users Slack channel](https://join.slack.com/t/nasa-ammos/shared_invite/zt-1mlgmk5c2-MgqVSyKzVRUWrXy87FNqPw).
 
 (building)=
 ## Building pymerlin

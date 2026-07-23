@@ -2,15 +2,15 @@
 
 ## Overview
 
-This document describes the implementation of JPL/Aerie time format support in pymerlin. The implementation matches Aerie's approach to time handling, distinguishing between:
+This document describes the implementation of JPL/PlanDev time format support in pymerlin. The implementation matches PlanDev's approach to time handling, distinguishing between:
 - **Duration**: Relative time intervals (ISO 8601 duration format)
 - **SPICE**: Absolute timestamps (ISO 8601 and DOY timestamp formats)
 
 ## What Was Implemented
 
-### 1. ISO 8601 Duration Support (Aerie-Compatible)
+### 1. ISO 8601 Duration Support (PlanDev-Compatible)
 
-Added methods to the `Duration` class matching Aerie's `Duration.parseISO8601()` and `Duration.toISO8601()`:
+Added methods to the `Duration` class matching PlanDev's `Duration.parseISO8601()` and `Duration.toISO8601()`:
 
 - **`Duration.parse_iso8601(iso8601_string)`**: Parse an ISO 8601 duration string
 - **`duration.to_iso8601()`**: Convert a Duration to an ISO 8601 duration string
@@ -22,7 +22,7 @@ Added methods to the `Duration` class matching Aerie's `Duration.parseISO8601()`
 - `PT45.5S` (45.5 seconds)
 - `P1DT12H` (1 day and 12 hours)
 
-**Note**: These parse **duration/interval** format (e.g., `PT12H`), not timestamp format (e.g., `2024-01-01T12:00:00Z`). This matches Aerie's Duration class design.
+**Note**: These parse **duration/interval** format (e.g., `PT12H`), not timestamp format (e.g., `2024-01-01T12:00:00Z`). This matches PlanDev's Duration class design.
 
 ### 2. SPICE Integration (Absolute Timestamps)
 
@@ -40,7 +40,7 @@ Added convenience functions in `spice.py`:
 
 ## Key Features
 
-1. **Aerie Compatibility**: Duration methods match Aerie's `parseISO8601()` and `toISO8601()` API
+1. **PlanDev Compatibility**: Duration methods match PlanDev's `parseISO8601()` and `toISO8601()` API
 2. **Microsecond Precision**: All conversions maintain microsecond precision
 3. **ISO 8601 Duration Format**: Supports standard duration format (`PT12H30M45S`)
 4. **Negative Durations**: Supports negative time intervals
@@ -49,7 +49,7 @@ Added convenience functions in `spice.py`:
 
 ## Usage Examples
 
-### ISO 8601 Duration Format (Aerie-Compatible)
+### ISO 8601 Duration Format (PlanDev-Compatible)
 
 ```python
 from pymerlin.duration import Duration, HOURS, MINUTES
@@ -191,7 +191,7 @@ python -m pytest tests/test_spice.py -v
 ### 🔄 Remaining Steps
 
 4. **Update documentation** - Add JPL time format examples to SPICE guide (`docs-src/2_guides/spice.md`)
-5. **Aerie validation** - Verify compatibility with Aerie's time representation (if applicable)
+5. **PlanDev validation** - Verify compatibility with PlanDev's time representation (if applicable)
 
 ## Compatibility
 

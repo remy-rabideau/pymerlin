@@ -1,122 +1,229 @@
-import os
+"""
+Pure-Python discrete-event simulation driver for PyMerlin.
+
+Drives a @MissionModel class directly — no Java, no py4j.
+Returns the same (profiles, spans, events) tuple as the old gateway-based simulate().
+"""
+
 import warnings
 from collections import namedtuple
-
-from py4j.java_gateway import Py4JJavaError, get_field
+from queue import Queue
 
 from pymerlin._internal import _globals
-from pymerlin._internal._gateway import start_gateway
-from pymerlin._internal._model_type import ModelType
-from pymerlin._internal._py4j_utilities import make_array
+from pymerlin._internal._registrar import Registrar
 from pymerlin._internal._schedule import Directive
-from pymerlin._internal._serialized_value import from_serialized_value, to_map_str_serialized_value
-from pymerlin._internal._task_specification import TaskInstance
+from pymerlin._internal._task_status import Delayed, Awaiting
 from pymerlin.duration import Duration, MICROSECONDS
-
-
-class Consumer:
-    def __init__(self, f):
-        self.f = f
-
-    def accept(self, args):
-        self.f.__call__(args)
-
-    class Java:
-        implements = ["java.util.function.Consumer"]
-
-
-def make_schedule(gateway, schedule):
-    entry_list = []
-    for offset, directive in schedule.entries:
-        if type(directive) == TaskInstance:
-            x: TaskInstance = directive
-            directive = Directive(x.definition.name, x.args)
-        entry_list.append(gateway.jvm.org.apache.commons.lang3.tuple.Pair.of(
-            gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.Duration.MICROSECOND.times(int(offset.to_number_in(MICROSECONDS))),
-            gateway.jvm.gov.nasa.ammos.aerie.merlin.python.Directive(
-                directive.type,
-                to_map_str_serialized_value(gateway, directive.args))))
-    return gateway.jvm.gov.nasa.ammos.aerie.merlin.python.Schedule.build(
-        make_array(
-            gateway,
-            gateway.jvm.org.apache.commons.lang3.tuple.Pair,
-            entry_list)
-    )
-
-
-def simulate_helper(gateway, model_type, config, schedule, duration):
-    valid_types = set(model_type.getDirectiveTypes().keys())
-    for offset, directive in schedule.entries:
-        type_name = directive.type if type(directive) == Directive else directive.definition.name
-        if type_name not in valid_types:
-            raise Exception("Unknown activity type: " + type_name)
-    merlin = gateway.entry_point.getMerlin()
-    if type(duration) is str:
-        duration = Duration.from_string(duration)
-    duration = gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.Duration.MICROSECONDS.times(int(duration.to_number_in(MICROSECONDS)))
-    start_time = gateway.jvm.java.time.Instant.EPOCH
-    schedule = make_schedule(gateway, schedule)
-    return merlin.simulate(model_type, config, schedule, start_time, duration)
-
-
-def simulate(model_type, schedule, duration):
-    for _, directive in schedule.entries:
-        if type(directive) == TaskInstance:
-            for result in directive.validate():
-                if not result.success:
-                    warnings.warn(repr(directive) + " failed validation: " + result.message)
-
-    if not type(model_type) == ModelType:
-        model_type = ModelType(model_type)
-    jar_path = os.path.join(os.path.dirname(__file__), "jars", "pymerlin.jar")
-    with start_gateway(jar_path) as gateway:
-        try:
-            model_type.set_gateway(gateway)
-            config = None
-            results = simulate_helper(gateway, model_type, config, schedule, duration)
-            profiles, spans, events = unpack_simulation_results(gateway, results)
-            return profiles, spans, events
-
-        except Py4JJavaError as e:
-            e.java_exception.printStackTrace()
-            # TODO extract all info from java exception and raise a purely python exception
-            raise e
-
-        finally:
-            # If we haven't run out of memory from this data structure yet, now's a good time to empty it
-            _globals.cell_values_by_id.clear()
 
 
 ProfileSegment = namedtuple("ProfileSegment", "extent dynamics")
 Span = namedtuple("Span", "type start duration")
 
-def unpack_simulation_results(gateway, results):
-    start_time = unix_micros_from_instant(get_field(results, 'startTime'))
 
+# ---------------------------------------------------------------------------
+# Reaction context installed into _globals so delay()/wait_until() yield
+# ---------------------------------------------------------------------------
+
+class _ReactionContext:
+    def __init__(self, outbox: Queue, inbox: Queue):
+        self._outbox = outbox
+        self._inbox = inbox
+
+    def yield_with(self, status):
+        self._outbox.put(("yield", status))
+        msg = self._inbox.get()
+        if msg != "resume":
+            raise RuntimeError(f"Unexpected sim message: {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Discrete-event simulation engine
+# ---------------------------------------------------------------------------
+
+def simulate(model_class, schedule, duration):
+    if type(duration) is str:
+        duration = Duration.from_string(duration)
+    duration_us = int(duration.to_number_in(MICROSECONDS))
+
+    # --- initialise model ---
+    registrar = Registrar()
+    cell_values = {}
+
+    model = model_class(registrar)
+
+    for cell_ref, initial_value, _evolution in registrar.cells:
+        cell_ref.id = id(cell_ref)
+        cell_values[id(cell_ref)] = initial_value
+
+    _globals.cell_values_by_id = cell_values
+
+    _globals._current_context[2] = model_class
+
+    # --- profile / span tracking ---
+    resource_names = [name for name, _ in registrar.resources]
+    # profiles: resource_name -> list of (start_us, end_us, value)
+    profile_segments_raw = {name: [] for name in resource_names}
+    # snapshot values at time 0
+    prev_values = {name: getter() for name, getter in registrar.resources}
+    prev_snapshot_us = 0
+
+    spans = []   # list of Span
+
+    # --- pending activity queue: list of (start_us, activity_name, args, task_id) ---
+    task_id_counter = [0]
+
+    def _next_id():
+        task_id_counter[0] += 1
+        return task_id_counter[0]
+
+    # Build initial queue from schedule
+    pending = []  # (start_us, task_id, activity_name, args_dict, parent_id)
+    for offset, directive in schedule.entries:
+        if type(offset) is str:
+            offset = Duration.from_string(offset)
+        start_us = int(offset.to_number_in(MICROSECONDS))
+        if isinstance(directive, Directive):
+            name, args = directive.type, directive.args
+        else:
+            raise ValueError(f"Expected Directive, got {type(directive)}")
+        pending.append((start_us, _next_id(), name, args, None))
+
+    pending.sort(key=lambda x: x[0])
+
+    now_us = 0
+
+    def _snapshot_profiles(at_us):
+        """Close the current segment at at_us using whatever value was current since prev_snapshot_us."""
+        nonlocal prev_snapshot_us
+        if at_us <= prev_snapshot_us:
+            # Refresh prev_values in place so post-emit values are picked up
+            for res_name, getter in registrar.resources:
+                prev_values[res_name] = getter()
+            return
+        for res_name, getter in registrar.resources:
+            profile_segments_raw[res_name].append(
+                (prev_snapshot_us, at_us, prev_values[res_name])
+            )
+            prev_values[res_name] = getter()
+        prev_snapshot_us = at_us
+
+    def _run_activity(activity_name, args, start_us):
+        """Run one activity to completion, handling delay/spawn/wait_until."""
+        if activity_name not in model_class.activity_types:
+            raise ValueError(f"Unknown activity type: {activity_name!r}")
+
+        task_def = model_class.activity_types[activity_name]
+        raw_func = getattr(task_def, "raw_func", None)
+        if raw_func is None:
+            raise ValueError(f"Activity {activity_name!r} has no raw_func")
+
+        inbox:  Queue = Queue(maxsize=1)
+        outbox: Queue = Queue(maxsize=1)
+        ctx = _ReactionContext(outbox, inbox)
+
+        spawn_queue: Queue = Queue()
+
+        def _spawner(task_instance):
+            child_name = getattr(task_instance, "activity_name", None)
+            spawn_queue.put((child_name, {}))
+
+        import threading
+
+        def _run():
+            _globals.reaction_context = ctx
+            _globals._current_context[1] = _spawner
+            try:
+                raw_func(model, **args)
+                outbox.put(("done",))
+            except Exception as exc:
+                outbox.put(("error", exc))
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        current_us = start_us
+        finish_us = start_us
+
+        while True:
+            msg = outbox.get()
+
+            # Drain spawns into pending before processing yield
+            while not spawn_queue.empty():
+                child_name, child_args = spawn_queue.get_nowait()
+                if child_name:
+                    pending.append((current_us, _next_id(), child_name, child_args, None))
+                    pending.sort(key=lambda x: x[0])
+
+            if msg[0] == "done":
+                finish_us = current_us
+                break
+
+            if msg[0] == "error":
+                raise msg[1]
+
+            # ("yield", status)
+            status = msg[1]
+
+            if isinstance(status, Delayed):
+                step_us = int(status.duration.to_number_in(MICROSECONDS))
+                _snapshot_profiles(current_us)
+                current_us += step_us
+                finish_us = current_us
+                inbox.put("resume")
+
+            elif isinstance(status, Awaiting):
+                condition = status.condition
+                # Poll condition: advance 1µs at a time until true
+                while not condition():
+                    _snapshot_profiles(current_us)
+                    current_us += 1
+                finish_us = current_us
+                inbox.put("resume")
+
+            else:
+                # Unknown status — resume immediately
+                inbox.put("resume")
+
+        return finish_us
+
+    # --- main simulation loop ---
+    while pending:
+        start_us, task_id, act_name, args, parent_id = pending.pop(0)
+
+        if start_us > duration_us:
+            break
+
+        _snapshot_profiles(start_us)
+        now_us = start_us
+
+        try:
+            finish_us = _run_activity(act_name, args, start_us)
+        except Exception as e:
+            warnings.warn(f"Activity {act_name!r} raised: {e}")
+            finish_us = start_us
+
+        finish_us = min(finish_us, duration_us)
+        _snapshot_profiles(finish_us)
+
+        spans.append(Span(
+            type=act_name,
+            start=Duration.of(start_us, MICROSECONDS),
+            duration=Duration.of(finish_us - start_us, MICROSECONDS),
+        ))
+
+    # Final profile snapshot at duration boundary
+    _snapshot_profiles(duration_us)
+
+    # --- pack profiles ---
     profiles = {}
-    for profile_name, profile_segments in get_field(results, 'discreteProfiles').items():
-        profiles[profile_name] = [ProfileSegment(
-            Duration.of(x.extent().dividedBy(gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.Duration.MICROSECOND),
-                        MICROSECONDS),
-            from_serialized_value(gateway, x.dynamics())) for x in profile_segments.getRight()]
+    for res_name in resource_names:
+        segs = []
+        for seg_start, seg_end, val in profile_segments_raw[res_name]:
+            extent = Duration.of(seg_end - seg_start, MICROSECONDS)
+            segs.append(ProfileSegment(extent=extent, dynamics=val))
+        if segs:
+            profiles[res_name] = segs
 
-    spans = []
-    for activity_id, activity in get_field(results, 'simulatedActivities').items():
-        spans.append(
-            Span(activity.type(), Duration.of(unix_micros_from_instant(activity.start()) - start_time, MICROSECONDS),
-                 Duration.of(activity.duration().dividedBy(
-                     gateway.jvm.gov.nasa.jpl.aerie.merlin.protocol.types.Duration.MICROSECOND), MICROSECONDS)))
-    for activity_id, activity in get_field(results, 'unfinishedActivities').items():
-        spans.append(
-            Span(activity.type(), Duration.of(unix_micros_from_instant(activity.start()) - start_time, MICROSECONDS),
-                 None))
+    _globals.cell_values_by_id.clear()
 
-    events = []
-
-    return profiles, spans, events
-
-
-def unix_micros_from_instant(instant):
-    seconds = instant.getEpochSecond()
-    nanos = instant.getNano()
-    return int((seconds * 1_000_000) + (nanos / 1000))
+    return profiles, spans, []

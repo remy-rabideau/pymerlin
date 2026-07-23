@@ -5,11 +5,21 @@ This page is under construction. Please bear with us as we port
 our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
 :::
 
-:::{warning}
-This page is a stub, since python mission models cannot yet be uploaded to Aerie.
+:::{note}
+Python mission models **can** be packaged and uploaded to PlanDev now — they run in-process on
+GraalPy inside the worker (see [Architecture](../../architecture.md)). This page is still
+being ported from the Java tutorial, but the packaging workflow below is current.
 :::
 
-Within your IDE, compile the model (`./gradlew assemble` should do the trick) and make sure it built successfully by checking `build/lib` for a new `missionmodel.jar` file.
+Package your model into an uploadable JAR with `pymerlin package` (see the
+[Build a JAR guide](../../2_guides/build-jar.md) for details):
+
+```shell
+pymerlin package --model mission.py:Model --out mission-model.jar
+```
+
+You don't need Java or a Gradle build for this — `pymerlin package` ships a prebuilt shim and
+bundles your model source into the JAR.
 
 Follow [these instructions](https://ammos.nasa.gov/aerie-docs/planning/upload-mission-model/) to upload your `.jar` file, and give your model a name and version number (e.g. SSR Model version 1.0). Next, you can follow [these instructions](https://ammos.nasa.gov/aerie-docs/planning/create-plan-and-simulate/#instructions) to create a new plan. Pick the model you just compiled to build your plan off of and name your plan `Mission Plan 1` and give it a duration of `1 day`. Click "Create" and click on the newly created plan to open it, which should take you to a view with the plan timeline in the center view panel.
 

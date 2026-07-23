@@ -5,7 +5,7 @@ This page is under construction. Please bear with us as we port
 our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
 :::
 
-With our second activity and corresponding resources built, let's compile the model again and upload it into Aerie (if
+With our second activity and corresponding resources built, let's compile the model again and upload it into PlanDev (if
 you forget how to do this, refer to the [Model Test Drive Page](2-model-test-drive) for simple instructions and
 references). Build a new plan off of the model you just uploaded, name your plan `Mission Plan 2`, and give it a
 duration of `1 day`. When you open this plan, you will see your two activity types appear in the left panel, which you
@@ -19,7 +19,7 @@ after the end of the activity. Finally, the `mag_data_mode` changes to `LOW_RATE
 until the end of the plan.
 
 At this point, you can take the opportunity to play around with
-Aerie's [Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) capability to change the colors
+PlanDev's [Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) capability to change the colors
 of activities or lines or put multiple resources onto one row. Try putting the `mag_data_mode` and `mag_data_rate` on the
 same row so you can easily see how the mode changes align with the rate changes and change the color of `mag_data_rate` to
 red. With these changes you should get something similar to the screenshot below

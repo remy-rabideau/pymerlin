@@ -1,21 +1,31 @@
 # Developing pymerlin
 
 For pymerlin development, you'll need:
-- Java 21 JDK
-- python 3.9 or higher
+- python 3.10 or higher — for the framework, tests, and local `simulate()` (pure Python).
+- Java 21 JDK — **only** to rebuild the shim JAR from source (below). Not needed to run the
+  Python tests or local simulations.
 
 Additional libraries:
 - build (for packaging)
 - twine (for publishing)
 - pytest (for running tests)
 
-## Building pymerlin.jar
+## Building the shim JAR
+
+The shim JAR (`pymerlin-shim.jar`) is what `pymerlin package` copies into an uploadable
+mission-model JAR; it implements PlanDev's `MerlinPlugin` SPI and runs the model in-process via
+GraalPy (see [architecture](./architecture.md) and [shim-protocol](./shim-protocol.md)).
+Rebuild it after any change to the Java shim code and copy it where the Python package
+expects it:
 
 ```shell
 cd java
 ./gradlew assemble
-mv pymerlin/build/libs/pymerlin.jar ../pymerlin/_internal/jars
+cp pymerlin-shim/build/libs/pymerlin-shim.jar ../pymerlin/_internal/jars/
 ```
+
+`pymerlin package` copies whatever JAR is at that path, so re-copying after a rebuild is
+required or a packaged model ships stale shim classes.
 
 ## Testing
 
@@ -36,8 +46,10 @@ Some starting points for future exploration:
   where time is spent, but it must be noted that it adds non-negligible overhead to the runtime of the program
 - [scalene](https://github.com/plasma-umass/scalene?tab=readme-ov-file) promises a lot of information at low overhead,
   and includes memory profiling as well (which may well be a critical metric for pymerlin given all the caching going on)
-- TODO we need a way to evaluate the "chattiness" of the interprocess communication
-- TODO consider whether we need to also measure the Java process - perhaps simply a measure of total memory footprint
-  would be sufficient?
+- Local `simulate()` is now a single pure-Python process, so there is no interprocess
+  communication to profile (the old py4j/subprocess "chattiness" concern is gone). For the
+  packaged path, the model runs in-process on GraalPy inside the PlanDev worker JVM; profiling
+  there means measuring one JVM (GraalPy's JIT may use multiple cores, and native packages
+  allocate outside the JVM heap — see `roadmap.md` §11.4), not a cross-process boundary.
 
 We would also want a standard benchmark to run for these measurements.

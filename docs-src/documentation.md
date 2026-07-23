@@ -50,10 +50,10 @@ Refer to [https://developers.google.com/style](https://developers.google.com/sty
 pymerlin is always lowercase. It may be styled as regular text or in a code block like this: `pymerlin` depending on the
 context.
 
-## Referencing Aerie
+## Referencing PlanDev
 
-pymerlin documentation should be self-contained for users who are not using an Aerie deployment - this means that
-some concepts will be repeated across pymerlin and Aerie documentation. In these scenarios, the relevant Aerie
+pymerlin documentation should be self-contained for users who are not using a PlanDev deployment - this means that
+some concepts will be repeated across pymerlin and PlanDev documentation. In these scenarios, the relevant PlanDev
 documentation page should be linked in a "Further reading" section at the bottom of the page.
 
 ## Glossary
