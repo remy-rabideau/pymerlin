@@ -8,7 +8,7 @@ our [Java tutorial](https:#nasa-ammos.github.io/aerie-docs/tutorials/mission-mod
 Now is where the fun really begins! Although having the data rate in and out of our SSR is useful, we are often more
 concerned with the total amount of volume we have in our SSR in order to make sure we don't over fill it and have
 sufficient downlink opportunities to get all the data we collected back to Earth. In order to compute total volume, we
-must figure out a way to integrate our `recording_rate`. It turns out there are many different methods in Aerie you can
+must figure out a way to integrate our `recording_rate`. It turns out there are many different methods in PlanDev you can
 choose to arrive at the total SSR volume, but each method has its own advantages and drawbacks. We will explore 4
 different options for integration with the final option, a derived `Polynomial` resource, being our recommended
 approach. As we progress through the options, you'll learn about a few more features of the resource framework that you
@@ -19,7 +19,7 @@ can use for different use cases in your model including the use of `Reactions` a
 The simplest method for performing an "integration" of `recording_rate` is to compute the integral directly within the
 effect model of the activities who change the `recording_rate`. Before we do this, let's make sure we have a data volume
 resource in our `DataModel` class. For each method, we are going to build a different data volume resource so we can
-eventually compare them in the Aerie UI. As this is our simplest method, let's call this resource `ssr_volume_simple`
+eventually compare them in the PlanDev UI. As this is our simplest method, let's call this resource `ssr_volume_simple`
 and make it store volume in Gigabits (Gb). Since we are going to directly effect this resource in our activities, this
 will need to be a `cell`. The declaration looks just like `recording_rate`
 
@@ -60,7 +60,7 @@ model.data_model.ssr_volume_simple += this.rate * step_size.to_number_in(SECONDS
 which would replace the `delay()` and the single data volume increase line from above. The resulting timeline
 for `ssr_volume_simple` would look like a stair step with the number of steps equal to `num_steps`. It's important to
 remember we are still using a `Discrete` resource, so the resource is stored as a constant, "step-function" profile in
-Aerie. We will show the use of a `Polynomial` resource in our final method to truly store and view data volume as a
+PlanDev. We will show the use of a `Polynomial` resource in our final method to truly store and view data volume as a
 linear profile.
 
 Another issue with this approach is that iy does not transfer well to activities like `change_mag_mode` that alter
@@ -121,7 +121,7 @@ def integrate_sampled_ssr(data_model: DataModel):
                 / 1000.0)  # Mbit -> Gbit
 ```
 
-As a programmer, you may be surprised to see an infinite `while` loop, but Aerie will shut down this task, effectively
+As a programmer, you may be surprised to see an infinite `while` loop, but PlanDev will shut down this task, effectively
 breaking the loop, once the simulation reaches the end of the plan. Within the loop, the first thing we do is `delay()`
 by our sampling interval and then retrieve the current value of `recording_rate`. Finally, we sum up our rectangle by
 multiplying the current rate by the sampling interval. We could have easily chosen to use other numerical methods like
@@ -152,7 +152,7 @@ If you are looking for an efficient, yet accurate way to compute data volume fro
 take is to set up trigger that calls a function whenever `recording_rate` changes and then computes volume by
 multiplying
 the rate just before the latest change by the duration that has passed since the last change. Fortunately, there is a
-fairly easy way to do this in Aerie's modeling framework.
+fairly easy way to do this in PlanDev's modeling framework.
 
 Let's begin by creating one more `cell` called `ssr_volume_upon_rate_change` in our `DataModel` class (refer back to
 previous instances in this tutorial for how to declare and define one of these). In addition to our volume resource, we
@@ -251,7 +251,7 @@ case, `ssr_volume_polynomial` is actually linear anyway, so we are not "degradin
 down conversion.
 
 Now in reality, our on-board `SSR` is going to have a max capacity, and if data is removed from the `SSR`, we want to
-make sure our model stops decreasing the `SSR` volume once it reaches `0.0`. By good fortune, the Aerie framework
+make sure our model stops decreasing the `SSR` volume once it reaches `0.0`. By good fortune, the PlanDev framework
 includes another static method in `PolynomialResources` called `clampedIntegral()` that allows you to build a resource
 that takes care of all that messy logic to make sure you are adhering to your min/max limits.
 

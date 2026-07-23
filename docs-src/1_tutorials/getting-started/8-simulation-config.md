@@ -6,7 +6,7 @@ our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-mo
 :::
 
 There is often a need for certain aspects of a model to be exposed to the planner to provide flexibility to tweak and
-configure the model prior to a simulation run. The Aerie modeling framework provides
+configure the model prior to a simulation run. The PlanDev modeling framework provides
 a [simulation configuration](https://ammos.nasa.gov/aerie-docs/mission-modeling/configuration/) interface to satisfy
 this need. In our SSR model, we will expose a couple variables that already exist in our code: the sample interval for
 our `SSR_Volume_Sampled` resource and the SSR max capacity defined as part of the `ssr_volume_polynomial` resource
@@ -58,7 +58,7 @@ public record Configuration(Double ssrMaxCapacity,
 }
 ```
 
-Now, when Aerie loads in our model, the member variables above will be exposed as simulation configuration with defaults
+Now, when PlanDev loads in our model, the member variables above will be exposed as simulation configuration with defaults
 set to the defaults defined in this record. However, at the moment, changing the values from their defaults won't
 actually change the behavior of the simulation because our `DataModel` doesn't yet know about this configuration. Within
 our top-level `Mission` class, we need to pass our configuration into `DataModel` via its constructor
@@ -115,12 +115,14 @@ registrar.discrete("recording_rate", recording_rate, new DoubleValueMapper());
 previousrecording_rate = currentValue(recording_rate);
 ```
 
-Now you should be ready to try this out in the Aerie UI. Go ahead and compile your model with simulation configuration
-and upload it to Aerie. Build whatever plan you'd like and then before you simulate, in the left panel view, select "
+Now you should be ready to try this out in the PlanDev UI. Go ahead and package your model with simulation configuration
+(`pymerlin package --model mission.py:Model --out mission-model.jar`, see the
+[Build a JAR guide](../../2_guides/build-jar.md)) and upload it to PlanDev. Build whatever plan you'd like and then
+before you simulate, in the left panel view, select "
 Simulation" in the dropdown menu. You should now see your three configuration variables appear under "Arguments"
 
 ![Simulation Config](assets/Simulation_Config.png)
 
-Aerie is smart enough to look at the types of the configuration variables and generate a input field in the UI that best
+PlanDev is smart enough to look at the types of the configuration variables and generate a input field in the UI that best
 matches that type. So, for example, the `startingMagMode` is a simple drop down menu with the only options available
 being members of the `MagDataCollectionMode` enumeration.

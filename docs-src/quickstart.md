@@ -4,12 +4,16 @@ This section describes how to get started with `pymerlin` 🎉
 
 ## Installation
 
-First, make sure you have Java 21 JRE and python >=3.11 installed on your machine.
+First, make sure you have python >=3.10 installed on your machine.
 
-- Java: [https://adoptium.net/temurin/releases/](https://adoptium.net/temurin/releases/)
 - Python: [https://www.python.org/downloads/release/python-3120/](https://www.python.org/downloads/release/python-3120/)
 
-Once those are ready, make a [python virtual environment](https://docs.python.org/3/library/venv.html) for your project.
+You do **not** need Java to write models or run local simulations: pymerlin's `simulate()`
+is a pure-Python engine. Java (and GraalPy) only enter the picture when a packaged model runs
+inside a deployed PlanDev worker — see [Architecture](architecture.md) — and that runtime is
+supplied by the worker image, not your laptop.
+
+Make a [python virtual environment](https://docs.python.org/3/library/venv.html) for your project.
 
 After activating that environment, install `pymerlin` with the following terminal command:
 

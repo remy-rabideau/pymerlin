@@ -5,14 +5,14 @@ This page is under construction. Please bear with us as we port
 our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
 :::
 
-Welcome Aerie modeling padawans! For your training today, you will be learning the basics of mission modeling in Aerie
+Welcome PlanDev modeling padawans! For your training today, you will be learning the basics of mission modeling in PlanDev
 by building your own simple model of an on-board spacecraft solid state recorder (SSR). This model will track the
 recording rate into the recorder from a couple instruments along with the integrated data volume over time. Through the
 process of building this model, you'll learn about the fundamental objects of a model, activities and resources, and
 their structure. You'll be introduced to the different categories of resources and learn how you define and implement
 each along with restrictions on when you can/can't modify them. As a bonus, we will also cover how you can make your
 resources "unit aware" to prevent those pesky issues that come along with performing unit conversions and how you can
-test your model without having to pull your model into an Aerie deployment.
+test your model without having to pull your model into a PlanDev deployment.
 
 Let the training begin!
 
@@ -67,9 +67,9 @@ define resources:
 
 1. `cell` - resource whose value can be explicitly updated by activities or other modeling code after it has
    been defined. Updates to the resource take the form of "Effects" such as `increase`, `decrease`, or `set`. The values
-   of this category of resource are explicitly tracked in objects called "Cells" within Aerie, which you can read about
+   of this category of resource are explicitly tracked in objects called "Cells" within PlanDev, which you can read about
    in detail in
-   the [Aerie Software Design Document](https://ammos.nasa.gov/aerie-docs/overview/software-design-document/#cells) if
+   the [PlanDev Software Design Document](https://ammos.nasa.gov/aerie-docs/overview/software-design-document/#cells) if
    you are interested.
 2. `Resource` - resource whose value cannot be explicitly updated after it has been defined. In other words, these
    resources cannot be updated via "Effects". The most common use of these resources are to create "derived" resources
@@ -98,7 +98,7 @@ value of the resource progresses between computed points:
 TODO: Add more content on `Clock`
 
 :::{note}
-Polynomial resources currently cannot be rendered in the Aerie UI and must be transformed to a linear resource (an
+Polynomial resources currently cannot be rendered in the PlanDev UI and must be transformed to a linear resource (an
 example of this is shown later in the tutorial)
 :::
 
@@ -165,13 +165,13 @@ class DataModel:
 
 Now that we have a resource, let's build an activity called `collect_data` that emits effects on that resource. We can
 imagine this activity representing a camera on-board a spacecraft that collects data over a short period of time.
-Activities in Aerie follow the general definition given in
+Activities in PlanDev follow the general definition given in
 the [CCSDS Mission Planning and Scheduling Green Book](https://public.ccsds.org/Pubs/529x0g1.pdf)
 
 > "An activity is a meaningful unit of what can be planned… The granularity of a Planning Activity depends on the use
 > case; It can be hierarchical"
 
-Essentially, activities are the building blocks for generating your plan. Activities in Aerie follow a class/object
+Essentially, activities are the building blocks for generating your plan. Activities in PlanDev follow a class/object
 relationship
 where [activity types](https://nasa-ammos.github.io/aerie-docs/mission-modeling/activity-types/introduction/) - defined
 as a class in Java - describe the structure, properties, and behavior of an object and activity instances are the actual
@@ -221,7 +221,7 @@ def collect_data(model, rate=0.0, duration=Duration.from_string("01:00:00")):
 
 The `@Validation` decorator specifies a function to validate one or more parameters, and a message to present to the
 operator when the validation fails. Now, as you will see soon, when an operator specifies a data rate above `100.0`,
-Aerie will show a validation error and message.
+PlanDev will show a validation error and message.
 
 Next, we need to tell our activity how and when to effect change on the `recording_rate` resource, which is done in
 an [Activity Effect Model](https://nasa-ammos.github.io/aerie-docs/mission-modeling/activity-types/effect-model/). We do

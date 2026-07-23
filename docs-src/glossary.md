@@ -3,7 +3,7 @@
 % Entries should be sorted alphabetically, cross-reference other entries, and end in periods.)
 
 :::{glossary}
-Aerie
+PlanDev
   A suite of planning and scheduling, modeling and simulation, constraint checking and sequencing tools.
 
 Activity Type
@@ -27,10 +27,10 @@ Effect Model
   The body of the function describing an activity's behavior during simulation.
 
 Merlin
-  The modeling and simulation component of Aerie.
+  The modeling and simulation component of PlanDev.
 
 Mission model
-  A description of a system that Aerie understands. This primarily includes definitions of Activity Types and Resources.
+  A description of a system that PlanDev understands. This primarily includes definitions of Activity Types and Resources.
 
 Profile
   A piece-wise defined function from time to a value
@@ -51,7 +51,7 @@ Validation
 :::
 
 ## Other terminology:
-There are some general terms that Aerie uses very specifically, that may not be worth a glossary entry, but do deserve
+There are some general terms that PlanDev uses very specifically, that may not be worth a glossary entry, but do deserve
 some attention.
 
 ### Parameters vs Arguments

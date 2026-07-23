@@ -1,238 +1,106 @@
-# PyMerlin Shim Protocol
+# Shim architecture (in-process)
 
-> **Superseded (2026-07-21, roadmap.md §6.3/§6.6).** This document describes the
-> Phase 0–2 subprocess/JSON protocol — `SubprocessBridge`, `PythonProcess.java`,
-> `Protocol.java`, and this module's `_send`/`_recv`/`_ActivityRunner` — which was deleted
-> once the Phase 3 in-process direct-call path (GraalPy host callbacks, no subprocess, no
-> protocol) was proven byte-identical against it on a real GraalPy image. Kept here for
-> historical/reference value only; do not use this as current documentation. A proper
-> rewrite documenting the direct-call architecture is Phase 5 work (roadmap.md §8,
-> "Document the worker-image contract") — until that lands, `roadmap.md` §6 is the
-> authoritative description of how the shim actually works.
+This document describes how the pymerlin shim actually runs a model: **in-process**, inside
+the PlanDev worker's JVM, on an embedded [GraalPy](https://www.graalvm.org/python/)
+interpreter. There is no subprocess and no wire protocol — Java and Python call each other
+directly across the GraalVM polyglot boundary.
 
-Newline-delimited JSON over stdin/stdout between the Java shim JAR and the Python server process.
+> **Superseded document, now rewritten (2026-07-21 → Phase 5).** This file previously
+> documented the Phase 0–2 subprocess/JSON protocol (`SubprocessBridge`, `PythonProcess.java`,
+> `Protocol.java`, and `_server.py`'s `_send`/`_recv`/`_ActivityRunner`), all of which were
+> deleted once the in-process direct-call path was proven byte-identical against them on a
+> real GraalPy image (`roadmap.md` §6.3/§6.6). The description below reflects the current
+> architecture; `roadmap.md` §6 (execution) and §7 (cells) remain the authoritative,
+> low-level source of truth.
 
-- Each message is a single JSON object followed by `\n`.
-- Java writes to Python's stdin; Python writes to Java's stdout.
-- The exchange is strictly request/response — Java always sends first, Python always responds.
-- All durations are in **microseconds** (integer).
+## The two seams
 
----
+Two Java types define the boundary. Both live in `java/pymerlin-shim/`.
 
-## Startup
+- **`PyBridge`** — Java → Python. The queries and the activity-entry call the shim makes
+  *into* the model. The only implementation is `GraalBridge`, which holds the GraalPy
+  `Context`. (`PyBridge` stays an interface purely as a seam for a possible future
+  fallback bridge; there is no runtime bridge switch anymore.)
+- **`PyActions`** — Python → Java. A single host object handed to every activity; the model's
+  `delay`/`emit`/`spawn`/`call`/`wait_until` call *back out* through it into the PlanDev engine.
 
-Java launches:
-```
-python -m pymerlin._server --model <path/to/model.py:ClassName>
-```
+Everything the old JSON protocol expressed as messages is now one of these two directions of
+ordinary method call, passing `org.graalvm.polyglot.Value` objects (and, where a serialized
+form is genuinely needed, `gson` `JsonObject`/`JsonElement`).
 
-Python writes a single ready message to stdout when initialised:
-```json
-{"op": "ready"}
-```
+## Java → Python: `PyBridge` / `GraalBridge`
 
----
+At load time, `GraalBridge` builds a GraalPy `Context`, puts the model's source directory on
+`sys.path`, and imports the entry points from `pymerlin._internal._server`. Then:
 
-## Message Reference
+| `PyBridge` method | Python it calls | When |
+|---|---|---|
+| `getActivityTypes()` | `_describe_activity_types(model_class)` | `getDirectiveTypes()`, model-class only |
+| `getConfigParameters()` | `_describe_config(model_class)` | `getConfigurationType()`, model-class only |
+| `setConfiguration(json)` | (stored; passed to `_ModelState`) | before the model state is built |
+| `getResources()` | `_ModelState.describe_resources()` | after `instantiate()` |
+| `getResourceValue(name)` | `_ModelState.get_resource_value(name)` | resource extraction |
+| `getCells()` | `_ModelState.describe_cells()` | after `instantiate()` (Phase 4) |
+| `runActivityDirect(...)` | `run_activity_direct(model_state, actions, name, args)` | per activity |
 
-### 1. `get_activity_types`
+Registration queries (`getActivityTypes`/`getConfigParameters`) only touch the model *class*,
+so they never instantiate the model — a metadata-only bridge is cheap. The model's
+`_ModelState` (and its cells) is built lazily on first use.
 
-Java asks Python to describe every activity type in the model.
+## Python → Java: `PyActions`
 
-**Request (Java → Python)**
-```json
-{"op": "get_activity_types"}
-```
+`runActivityDirect` runs the Python activity function **to completion on the calling PlanDev
+`ThreadedTask` thread**, handing it the shared `PyActions` host object. There is no drive
+loop, no queue, and no background Python thread: when the model calls an action, it is a
+synchronous host call that returns control to Python when the engine says so.
 
-**Response (Python → Java)**
-```json
-{
-  "op": "activity_types",
-  "types": {
-    "increment_counter": {
-      "parameters": {
-        "count": {"type": "int", "required": false, "default": 1}
-      }
-    },
-    "temperature_cycle": {
-      "parameters": {}
-    }
-  }
-}
-```
+| Model call (Python) | `PyActions` method | Effect |
+|---|---|---|
+| `delay(duration)` | `delay(micros)` | `ModelActions.delay(...)` parks this task thread |
+| `cell.emit(value)` | `emitCell(cellIndex, value)` | emit to the cell's topic (Phase 4) |
+| `cell.set_rate(r)` | `setRate(cellIndex, rate)` | set a linear cell's rate (Phase 4) |
+| `cell.get()` | `ask(cellIndex)` | `ModelActions.ask(cellId)`; registers a read dependency during `wait_until` |
+| `spawn(child(...))` | `spawnActivity(name, argsJson)` | a fresh child `ThreadedTask` |
+| `call(child(...))` | `callActivity(name, argsJson)` | a fresh child; **blocks** the caller until it finishes |
+| `wait_until(pred)` | `waitUntil(BooleanSupplier)` | wraps the Python predicate in a PlanDev `Condition` and yields |
 
-Parameter `type` values: `"int"`, `"float"`, `"str"`, `"bool"`, `"any"`.
+`wait_until` is the payoff of running in-process: the Python predicate is passed to Java as a
+`BooleanSupplier` (GraalPy auto-wraps the callable), wrapped in a PlanDev `Condition`, and the
+engine re-evaluates it on the engine thread whenever a cell the predicate read changes — real
+dependency-tracked blocking, not tick polling.
 
----
+## Why this is legal (threads and the GIL)
 
-### 2. `get_resources`
-
-Java asks Python to describe every registered resource.
-
-**Request**
-```json
-{"op": "get_resources"}
-```
-
-**Response**
-```json
-{
-  "op": "resources",
-  "resources": {
-    "/counter":     {"value_type": "int"},
-    "/temperature": {"value_type": "float"},
-    "/status":      {"value_type": "str"}
-  }
-}
-```
-
----
-
-### 3. `get_resource_value`
-
-Java queries the current value of a single resource (used during Aerie resource extraction).
-
-**Request**
-```json
-{"op": "get_resource_value", "name": "/counter"}
-```
-
-**Response**
-```json
-{"op": "resource_value", "name": "/counter", "value": "0"}
-```
-
-Value is always serialised as a string.
-
----
-
-### 4. `run_activity`
-
-Java tells Python to start executing a named activity. Python begins running it and immediately
-suspends at the first `delay()`, `wait_until()`, `emit()`, `spawn()`, or completion, then
-sends the appropriate response.
-
-**Request**
-```json
-{"op": "run_activity", "id": "act-1", "name": "increment_counter", "args": {"count": 3}}
-```
-
-`id` is an opaque string Java uses to identify concurrent activities.
-
----
-
-### 5. `resume`
-
-Java resumes a suspended activity after honouring its last yield (delay elapsed, condition met, etc.).
-
-**Request**
-```json
-{"op": "resume", "id": "act-1"}
-```
-
-After `resume`, Python sends the next yield response (same set as after `run_activity`).
-
----
-
-## Activity Yield Responses (Python → Java)
-
-These are sent in response to `run_activity` or `resume`.
-
-### `delay`
-Activity called `delay(duration)` and is suspended.
-```json
-{"op": "delay", "id": "act-1", "duration_us": 600000000}
-```
-
-### `emit`
-Activity called `cell.emit(value)`. Java applies it to the Aerie cell, then immediately
-sends another `resume` so Python can continue to the next yield point.
-```json
-{"op": "emit", "id": "act-1", "resource": "/counter", "value": "1"}
-```
-
-### `spawn`
-Activity called `spawn(child_activity(...))`. Java schedules the child, then immediately
-sends another `resume` so the parent continues.
-```json
-{"op": "spawn", "id": "act-1", "name": "increment_counter", "args": {}}
-```
-
-### `wait_until`
-Activity called `wait_until(condition)`. Java polls the condition each sim tick and sends
-`resume` when it evaluates to true.
-```json
-{"op": "wait_until", "id": "act-1", "condition_resource": "/temperature", "condition_op": "gt", "condition_value": "30.0"}
-```
-
-Supported `condition_op` values: `"gt"`, `"lt"`, `"gte"`, `"lte"`, `"eq"`, `"neq"`.
-
-> **Note:** For complex/lambda conditions not expressible as a simple comparison, Python can
-> instead periodically re-evaluate the condition itself. In that case it sends:
-> ```json
-> {"op": "wait_until_opaque", "id": "act-1"}
-> ```
-> Java calls `resume` each sim tick; Python re-evaluates the condition and either sends
-> another `wait_until_opaque` (still waiting) or the next real yield point.
-
-### `done`
-Activity completed normally.
-```json
-{"op": "done", "id": "act-1"}
-```
-
-### `error`
-Activity raised an exception.
-```json
-{"op": "error", "id": "act-1", "message": "ZeroDivisionError: division by zero"}
-```
-
----
-
-## Error handling
-
-If Python sends `error` for an activity, Java logs it and treats the activity span as failed.
-If the Python process crashes or closes stdout, Java shuts down simulation with a fatal error.
-
----
-
-## Concurrency model
-
-Python executes one activity step at a time (single-threaded cooperative). Java serialises
-`run_activity` / `resume` calls — it never sends a new request until it has received a yield
-response for the previous one. This means no locking is needed in the Python server.
-
----
+An activity blocks its `ThreadedTask` thread inside a host call (`delay`, `call`, `wait_until`)
+with Python frames still on the stack. This does not deadlock the engine because GraalPy
+releases its interpreter lock across the Python→host call boundary, so another task can enter
+the same `Context` concurrently. This is the property Gate B set out to prove before any of
+this was built; see `roadmap.md` §1.3.2 and the Gate B result.
 
 ## Lifecycle
 
 ```
-Java                          Python
- |                              |
- |-- (spawn process) ---------->|
- |<-- {"op":"ready"} -----------|
- |                              |
- |-- get_activity_types ------->|
- |<-- activity_types -----------|
- |                              |
- |-- get_resources ------------>|
- |<-- resources ---------------|
- |                              |
- |  [ simulation begins ]       |
- |                              |
- |-- run_activity id=act-1 ---->|
- |<-- delay 600s ---------------|
- |                              |
- |  [ 600s elapses in sim ]     |
- |                              |
- |-- resume id=act-1 ---------->|
- |<-- emit /counter "1" --------|
- |-- resume id=act-1 ---------->|
- |<-- spawn increment_counter --|
- |-- resume id=act-1 ---------->|
- |<-- done id=act-1 -----------|
- |                              |
- |  [ Java schedules child ]    |
- |-- run_activity id=act-2 ---->|
- |   ...                        |
+Java                                   Python (GraalPy, same JVM)
+ |                                      |
+ |-- GraalBridge: build Context ------->|  import _server entry points
+ |-- getConfigParameters() ------------>|  _describe_config(model_class)
+ |-- getActivityTypes() --------------->|  _describe_activity_types(model_class)
+ |                                      |
+ |   [ instantiate() ]                  |
+ |-- setConfiguration(json) ----------->|  (stored)
+ |-- getCells()/getResources() -------->|  _ModelState(model_class, config)
+ |  allocate a PlanDev cell per resource|
+ |                                      |
+ |   [ simulation begins ]              |
+ |-- runActivityDirect(act-1, ...) ---->|  run_activity_direct(state, actions, ...)
+ |                                      |    body runs on this task thread:
+ |<----- actions.emitCell(...) ---------|      cell.emit(...)
+ |<----- actions.delay(micros) ---------|      delay(...)  (thread parks)
+ |   [ engine advances time ]           |
+ |   ...unpark, continue...             |
+ |<----- actions.spawnActivity(...) ----|      spawn(child(...))
+ |  (returns when the function returns) |
+ |                                      |
+ |   [ simulation ends ]                |
+ |-- close(): Context.close(true) ----->|  (+ delete any extracted model source)
 ```

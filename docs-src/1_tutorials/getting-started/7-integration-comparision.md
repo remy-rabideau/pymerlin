@@ -5,10 +5,12 @@ This page is under construction. Please bear with us as we port
 our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
 :::
 
-Now that we have explored multiple methods to implement integration in Aerie, let's compare all of the methods in the
-Aerie UI. To make things more interesting, use the 2nd approach to the `Polynomial` method so we can see how that
-approach enforces a data volume capacity. Compile the current version of the model (`./gradlew assemble`) and upload it
-into Aerie. Build a new `1 day` plan off of that model and call it "Mission Plan 3".
+Now that we have explored multiple methods to implement integration in PlanDev, let's compare all of the methods in the
+PlanDev UI. To make things more interesting, use the 2nd approach to the `Polynomial` method so we can see how that
+approach enforces a data volume capacity. Package the current version of the model
+(`pymerlin package --model mission.py:Model --out mission-model.jar`, see the
+[Build a JAR guide](../../2_guides/build-jar.md)) and upload it into PlanDev. Build a new
+`1 day` plan off of that model and call it "Mission Plan 3".
 
 For this plan, throw a couple of `collect_data` activities near the beginning of the plan, create a `change_mag_mode`
 activity after those activities in the first half of the plan and set that activity's parameter to `HIGH_RATE`. Throw
@@ -17,7 +19,7 @@ our data capacity threshold. With our simple plan built, go ahead and simulate t
 profiles.
 
 The easiest way to compare our four integration methods is to use
-Aerie's [Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) capability to build a row that
+PlanDev's [Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) capability to build a row that
 includes all four of our data volume resources:
 
 - `ssr_volume_simple`
@@ -46,6 +48,6 @@ capacity. `ssr_volume_polynomial` has same computed points as `ssr_volume_upon_r
 segments in between points. It also has an additional point once it reaches the capacity threshold, and then it remains
 at that threshold for the remainder of the plan (we don't have any downlinks or we would see the volume decrease).
 
-Hopefully looking at the various methods of integrating in Aerie has given you some insight into the modeling constructs
+Hopefully looking at the various methods of integrating in PlanDev has given you some insight into the modeling constructs
 available to you. You can do a ton with what you have learned thus far, but next we'll go over some additional
-capabilities you will likely find useful as you build models with Aerie.
+capabilities you will likely find useful as you build models with PlanDev.

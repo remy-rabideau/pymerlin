@@ -6,12 +6,22 @@ pymerlin is a Python mission modeling framework for the [PlanDev](https://github
 To learn more about PlanDev, read the [PlanDev Docs](https://nasa-ammos.github.io/aerie-docs).
 <!-- end elevator-pitch -->
 
-> **Branch note:** This fork is on `feature/pymerlin-shim-protocol`. The architecture has changed significantly from `main` — py4j has been replaced with a stdin/stdout JSON shim protocol. See [Architecture](#architecture) below.
+> **Branch note:** This fork is on `feature/shim-graalpy`. The architecture has changed
+> significantly from `main`: py4j is gone, and so is the intermediate stdin/stdout JSON
+> subprocess shim that briefly replaced it. A packaged model now runs **in-process** inside
+> the PlanDev worker's JVM via an embedded [GraalPy](https://www.graalvm.org/python/)
+> interpreter — Java and Python call each other directly, with no subprocess and no
+> serialization protocol between them. See [Architecture](#architecture) below and
+> [`roadmap.md`](../roadmap.md).
 
 ## Prerequisites
 
-- Python >= 3.10
-- Java >= 21 (only needed for local simulation via the `main`-branch py4j path; not needed for `pymerlin package`)
+- Python >= 3.10 — to author models and run `pymerlin package`.
+- Java >= 21 — only for building the shim JAR from source (`./gradlew`); **not** needed to
+  author a model or to run `pymerlin package`, which ships a prebuilt shim JAR.
+
+At simulation time the model runs on the GraalPy interpreter that the PlanDev worker image
+provides (see [Worker-image contract](#worker-image-contract)) — not on your local CPython.
 
 ## Installation
 
@@ -35,52 +45,93 @@ To produce a PlanDev-uploadable mission model JAR from a Python model:
 pymerlin package --model path/to/model.py:MissionClassName --out mission-model.jar
 ```
 
-This bundles the Python model files into the JAR alongside the prebuilt shim, and stamps the model reference into the JAR manifest. The resulting JAR can be uploaded to a deployed PlanDev instance.
+This copies the prebuilt shim JAR (`pymerlin-shim.jar`), bundles your Python model source
+into it under `pymerlin_models/`, and stamps the model reference into the JAR manifest as
+`Pymerlin-Model-Ref`. If the model file sits next to an `__init__.py`, the whole package
+directory is bundled so intra-package imports keep working. The resulting JAR uploads to a
+deployed PlanDev instance like any Java mission model.
 
-**PlanDev worker requirement:** The PlanDev merlin-worker container must have `python3` and `pymerlin` installed. The PlanDev Dockerfiles on this branch already handle this — `python3`, `pip3`, and `pip3 install pymerlin` are included in both `merlin-server` and `merlin-worker` images.
+The JAR is deliberately thin: it contains only the shim classes, the bundled `gson`
+dependency (used for Java↔Python argument/description marshalling), and your model source.
+It does **not** contain the GraalPy runtime, the Python standard library, or any Python
+packages — those are supplied by the worker image at simulation time.
+
+## Worker-image contract
+
+A packaged model does not carry its own Python runtime or dependencies. Instead, the PlanDev
+`merlin-worker` and `merlin-server` images ship an embedded GraalPy interpreter plus a
+pre-built virtual environment ("`python-resources`"), and the shim runs the bundled model
+against that. Both images are provisioned by the shared script
+[`plandev/docker/graalpy/install.sh`](../plandev/docker/graalpy/install.sh); the layout it
+produces (external-directory mode) is:
+
+```
+/opt/pymerlin/python-resources/
+  venv/   <- GraalPy virtualenv: pymerlin + numpy + spiceypy
+  src/    <- model .py, extracted from the uploaded JAR at simulation time
+```
+
+**Packages available to a model:** the pre-built venv contains exactly **`pymerlin`,
+`numpy`, and `spiceypy`** (a fixed set — see `roadmap.md` §11.2). `pymerlin` is installed
+from local source in this checkout, not from PyPI. `numpy`/`spiceypy` are installed with
+GraalPy's own patched `pip` against its wheel repository — CPython wheels from PyPI are **not**
+binary-compatible with GraalPy and cannot be used.
+
+**If your model needs a package that isn't in the venv:** a missing dependency is an
+**image rebuild**, not a JAR change. Add the package to the install step in
+`plandev/docker/graalpy/install.sh` (pin it in
+[`constraints.txt`](../plandev/docker/graalpy/constraints.txt) so isolated build
+environments resolve GraalPy-compatible versions), rebuild the `merlin-worker` and
+`merlin-server` images, and redeploy. Packages with native extensions must build cleanly
+under GraalPy — most pure-Python and the vetted native packages (numpy, spiceypy/CSPICE)
+do, but this is the thing to validate before relying on it. A per-model
+`requirements.txt` layered into an ephemeral venv at startup is a deliberate non-goal for
+now; add it only if a real need appears (`roadmap.md` §11.2).
 
 ## Architecture
 
-> **The subprocess description below is superseded (2026-07-21).** As of Phase 3
-> (roadmap.md §6.3/§6.6), the shim no longer spawns a Python subprocess or speaks the
-> newline-delimited-JSON protocol described here — activities run in-process via GraalPy,
-> with Java and Python calling each other directly. `python3`/`pip3 install pymerlin` is
-> also no longer required in the worker/server images for this branch. Kept below for
-> historical context on the architecture's evolution; `roadmap.md` (particularly §2, §5,
-> §6) is the current source of truth. A full rewrite of this section is Phase 5 work
-> (§8, "Document the worker-image contract").
-
-### Shim protocol (superseded — subprocess/JSON, Phase 0–2)
-
-The original py4j architecture (Python owns the process, launches Java as a subprocess) cannot produce a PlanDev-uploadable JAR because PlanDev requires Java to own the process and load mission models via its own classloader.
-
-This branch replaces py4j with a **shim protocol**: a prebuilt JAR (`pymerlin-shim.jar`) implements the PlanDev `MerlinPlugin` SPI and at simulation time spawns `python3 -m pymerlin._server` as a subprocess, communicating over **newline-delimited JSON on stdin/stdout**.
+A packaged pymerlin model runs **in-process** in the PlanDev worker JVM. The shim JAR
+implements PlanDev's `MerlinPlugin` SPI; at load time it creates an embedded GraalPy
+`Context` and imports the model's Python source into it. Activity-type registration,
+resource description, and every activity body all execute by Java calling Python functions
+directly and Python calling back into Java host objects — there is no subprocess, no
+stdin/stdout protocol, and no JSON drive loop.
 
 ```
 PlanDev merlin-worker (JVM)
-  └── ShimModelType (loaded from mission-model.jar)
-        └── spawns: python3 -m pymerlin._server --model model.py:Mission
-              ↕ newline-delimited JSON over stdin/stdout
+  └── ShimModelType  (loaded from mission-model.jar)
+        └── GraalBridge → embedded GraalPy Context
+              ↕ direct host calls (org.graalvm.polyglot.Value)
+            pymerlin model .py  (from python-resources/src)
 ```
 
-**Pre-simulation (activity type registration):** When PlanDev uploads a JAR it calls `ModelType.getDirectiveTypes()`. The shim starts a one-shot Python subprocess, sends `{"op": "get_activity_types"}`, reads the response, then kills the subprocess. This populates the activity palette in the PlanDev UI.
+- **Activity registration.** `ModelType.getDirectiveTypes()` /
+  `getConfigurationType()` call `_describe_activity_types` / `_describe_config` on the model
+  class directly and return the schema to PlanDev's activity palette — a model-class-only
+  query that never instantiates the model.
+- **Simulation.** `ModelType.instantiate()` builds the model's `_ModelState`, allocates a
+  real PlanDev cell for each declared resource, and runs each activity body on the calling
+  PlanDev task thread. `delay()`, `emit()`, `spawn()`, `call()`, and `wait_until()` route
+  straight through a Java host object (`PyActions`) into the PlanDev engine — `wait_until`
+  hands the Python predicate to Java as a `BooleanSupplier` wrapped in a PlanDev `Condition`,
+  and `call()` genuinely blocks the parent until the child completes.
 
-**At simulation time:** `ModelType.instantiate()` starts a long-lived Python subprocess for the duration of the simulation. The shim queries resources, allocates PlanDev cells for each one, then drives activities via the protocol:
-
-| Java → Python | Python → Java |
-|---|---|
-| `{"op": "run_activity", "id": "act-1", "name": "Foo", "args": {...}}` | `{"op": "delay", "duration_us": 3600000000, "emits": [...], "spawns": [...]}` |
-| `{"op": "resume", "id": "act-1"}` | `{"op": "done", "emits": [...]}` |
-
-Resource updates (`emits`) and child activity launches (`spawns`) are inlined into each yield response.
+For the design rationale (why in-process GraalPy over py4j or a subprocess, the GIL/thread
+model, abort semantics, native-extension support) and the phase-by-phase record, see
+[`roadmap.md`](../roadmap.md). A focused description of the Java↔Python in-process interface is
+in [`docs-src/shim-protocol.md`](docs-src/shim-protocol.md).
 
 ### Approachability over performance
 
-The main tenet of pymerlin is approachability for rapid model prototyping. Users who need production simulation performance should port their model to Java, which eliminates the subprocess communication overhead and gives a single instrumented JVM process.
+The main tenet of pymerlin is approachability for rapid model prototyping. Running
+in-process removes the old subprocess/serialization overhead, but a model author who needs
+production simulation performance should still port the model to Java for a single,
+fully instrumented JVM process.
 
 ## Building the shim JAR
 
-If any changes are made to the Java shim code, rebuild and place the JAR where the Python package expects it:
+If any changes are made to the Java shim code, rebuild and place the JAR where the Python
+package expects it:
 
 ```shell
 cd java
@@ -88,41 +139,54 @@ cd java
 cp pymerlin-shim/build/libs/pymerlin-shim.jar ../pymerlin/_internal/jars/
 ```
 
-The JAR lives inside the `pymerlin` Python source directory so it is included in the pip distribution.
+The JAR lives inside the `pymerlin` Python source directory so it is included in the pip
+distribution. `pymerlin package` copies whatever JAR is at that path — so re-copying after a
+rebuild is required, or a packaged model ships stale shim classes.
+
+The shim's polyglot/GraalPy dependencies are `compileOnly`: the worker's classloader supplies
+them at runtime, so they are deliberately kept **out** of the shim JAR (bundling them would
+pack hundreds of megabytes of Python runtime into every uploaded model). See
+`java/pymerlin-shim/build.gradle` for the dependency rationale, including why `gson` is
+still bundled.
 
 ## Known limitations and open work
 
+Phases 1–4 of the GraalPy migration closed most of the functional gaps the earlier
+subprocess architecture had: `call()`, `wait_until` with real conditions, linear
+(interpolated) resources, cell evolution, model configuration, and temp-directory cleanup
+all work now (see `roadmap.md`). What remains:
+
 ### Functional gaps
 
-- **`call()` not implemented.** The `call()` action (parent waits for a child activity to complete before continuing) has no protocol op. It needs a `{"op": "call", ...}` message and a corresponding inline drive loop in `ShimModelType.driveToCompletion()`.
-
-- **`wait_until` does not work correctly.** `_try_encode_condition()` in `_server.py` is a stub that always returns `None`, so all conditions fall back to `wait_until_opaque`. On the Java side `wait_until_opaque` resumes immediately without actually waiting on the condition. Activities that block on resource values will not behave correctly.
-
-- **Cell evolution is ignored.** Cells declared with an `evolution` function (e.g. linear/polynomial resource dynamics) have their evolution silently discarded in `_ModelState.__init__`. Evolving resources always report their initial value mid-simulation.
-
-- **All resources are typed as `discrete`.** Float resources that should be interpolated linearly by PlanDev will appear as step functions in simulation results.
-
-- **Only primitive parameter types.** Activity parameters typed as lists, dicts, enums, `Duration`, or custom classes fall through to `ValueSchema.STRING`. PlanDev will show them as string fields with no validation.
-
-- **No model configuration.** `getConfigurationType()` returns empty — there is no way to pass mission-level configuration parameters to the model at simulation time.
-
-- **Concurrent activities share a single protocol pipe unsynchronized.** PlanDev runs activities in parallel Java threads, but all share one `pythonProcess`. Concurrent activity execution will corrupt the protocol. A serialization lock or multiplexed protocol is needed.
+- **Only primitive activity/config parameter types.** Parameters typed as `int`, `float`,
+  `str`, or `bool` map to the matching `ValueSchema`; lists, dicts, enums, `Duration`, or
+  custom classes fall through to `ValueSchema.STRING` and appear in the PlanDev UI as
+  unvalidated string fields.
 
 ### Operational issues
 
-- **Temp directories are not cleaned up.** `extractIfBundled` creates a temp directory on every simulation run and never deletes it.
+- **No simulation timeout.** If a model's Python code hangs (e.g. an infinite loop with no
+  `delay`), the worker task thread blocks indefinitely — there is no watchdog.
+- **Python tracebacks are not yet surfaced to the PlanDev UI.** In-process, an uncaught
+  model error arrives Java-side as a `PolyglotException` carrying the Python stack, so this
+  is now fixable (unlike the old subprocess path where it was lost to stderr) — but the
+  wiring to put it in the user-facing simulation-failure message is not done. Tracked as a
+  Phase 6 item (`roadmap.md` §11.5).
 
-- **Python version path scan is incomplete.** `PythonProcess.java` scans a hardcoded list of site-packages paths up to Python 3.11. Python 3.12 (the default on Ubuntu Jammy) is not in the list, so `PYTHONPATH` may be empty even when pymerlin is installed. Set `PYMERLIN_SITE` explicitly if needed.
+### Open questions carried in the roadmap
 
-- **No simulation timeout.** If the Python process hangs, the Java worker thread blocks indefinitely.
+- **Model-side `finally:` during task abort** may not run when a task is cancelled
+  (`roadmap.md` §11.6) — needs re-verification against the real abort path, and if
+  confirmed, documenting as a model-authoring constraint.
+- **Concurrent same-tick emits to the same cell** were never exercised end-to-end
+  (`roadmap.md` §6.5/§6.7); multi-threaded activity execution against a shared cell is not
+  yet proven.
 
-- **Python tracebacks are not surfaced to the PlanDev UI.** Errors appear only in worker stderr logs, not in the simulation failure message returned to the user.
+### Tests
 
-### Missing tests
-
-`tests/test_simulation.py` covers only the py4j path. There are no tests for `_server.py` or the end-to-end `pymerlin package` + upload flow. Needed:
-- Activity execution with delays and emits
-- Spawn (child activities)
-- `call()` once implemented
-- `wait_until` with a simple condition
-- Resource value reporting through the protocol
+The in-process JUnit suite (`DemoModelSimulationTest`, `SpanTimingTest`,
+`CallSemanticsTest`) runs against a real GraalPy runtime + provisioned `python-resources`
+venv — i.e. the built worker image, via the `dockerTestBundle` task (see
+`java/pymerlin-shim/build.gradle`). On a stock JDK without that environment the tests
+`assumeTrue`-skip rather than false-fail. Phase 6 (`roadmap.md` §9) scopes the remaining
+coverage: spawn, `call()`, `wait_until`, resource reporting, and a span-timing assertion.
