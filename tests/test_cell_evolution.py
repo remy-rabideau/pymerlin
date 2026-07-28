@@ -411,3 +411,169 @@ def test_unmapped_cell_resource_still_works():
     (cell,) = [c for c in state.describe_cells() if c.get("resource") == "/temp"]
     assert cell["type"] == "float"
     assert cell.get("evolving") is True
+
+
+# ---------------------------------------------------------------------------
+# Tests — value types across the Java boundary
+#
+# The standalone framework keeps live Python objects, so it cannot catch types that
+# break only when marshalled. These simulate the Java path with a fake java_actions
+# to pin the contract that a Duration-valued evolving cell (pymerlin.clock) is read
+# and written as an OBJECT, never via str().
+#
+# Regression: clock.start() does `-self._system_clock.get()`, which raised
+#   TypeError: bad operand type for unary-: 'str'
+# once the value came back as "+00:00:00.0000.0" instead of a Duration.
+# ---------------------------------------------------------------------------
+
+class _FakeJavaActions:
+    """Minimal stand-in for the Java host object, storing live Python objects."""
+
+    def __init__(self, values):
+        self._values = list(values)
+        self.ask_calls = 0
+        self.ask_object_calls = 0
+
+    def ask(self, index):
+        self.ask_calls += 1
+        return str(self._values[index])
+
+    def askObject(self, index):
+        self.ask_object_calls += 1
+        return self._values[index]
+
+    def emitCell(self, index, value_str):
+        self._values[index] = value_str
+
+    def emitCellObject(self, index, value):
+        self._values[index] = value
+
+
+def _with_fake_java(values):
+    from pymerlin._internal import _globals
+    fake = _FakeJavaActions(values)
+    _globals.java_actions = fake
+    return fake
+
+
+def _clear_fake_java():
+    from pymerlin._internal import _globals
+    _globals.java_actions = None
+
+
+def test_evolving_duration_cell_reads_as_object():
+    """A Duration-valued evolving cell must not come back as a string.
+
+    str(Duration) is "+00:00:00.0000.0", and Duration.from_string cannot parse it, so
+    the string path is unrecoverable -- clock.start()'s unary minus fails on it.
+    """
+    from pymerlin.duration import ZERO, Duration, SECONDS
+
+    registrar = Registrar()
+    cell = registrar.cell(ZERO, evolution=lambda x, d: x + d)
+    cell._cell_index = 0
+    cell._value_type = Duration
+
+    fake = _with_fake_java([Duration.of(9, SECONDS)])
+    try:
+        value = cell.get()
+        assert isinstance(value, Duration), f"got {type(value).__name__}: {value!r}"
+        assert value == Duration.of(9, SECONDS)
+        # Unary minus is exactly what clock.start() does; a str would raise TypeError.
+        assert -value == Duration.of(-9, SECONDS)
+        assert fake.ask_object_calls == 1
+    finally:
+        _clear_fake_java()
+
+
+def test_evolving_duration_cell_writes_as_object():
+    """Writing a Duration-valued evolving cell keeps it a Duration, not str()."""
+    from pymerlin.duration import ZERO, Duration, SECONDS
+
+    registrar = Registrar()
+    cell = registrar.cell(ZERO, evolution=lambda x, d: x + d)
+    cell._cell_index = 0
+    cell._value_type = Duration
+
+    fake = _with_fake_java([ZERO])
+    try:
+        cell.emit(Duration.of(30, SECONDS))
+        stored = fake._values[0]
+        assert isinstance(stored, Duration), f"stored as {type(stored).__name__}: {stored!r}"
+        assert stored == Duration.of(30, SECONDS)
+    finally:
+        _clear_fake_java()
+
+
+def test_non_evolving_cell_still_uses_string_path():
+    """Only evolving cells take the object path; discrete cells are unchanged."""
+    registrar = Registrar()
+    cell = registrar.cell(1.5)
+    cell._cell_index = 0
+    cell._value_type = float
+
+    fake = _with_fake_java([2.5])
+    try:
+        assert cell.get() == 2.5
+        assert fake.ask_calls == 1
+        assert fake.ask_object_calls == 0
+    finally:
+        _clear_fake_java()
+
+
+# ---------------------------------------------------------------------------
+# Tests — bounded linear cells (Aerie ClampedIntegrator equivalent)
+#
+# A linear cell integrates value + rate*t with no bounds by default. For a
+# physically bounded quantity that is wrong: a battery at 100% with the solar
+# panels generating a surplus keeps climbing to 130%, 200%, ...
+# ---------------------------------------------------------------------------
+
+def test_linear_cell_bounds_are_described():
+    """minimum/maximum reach Java through describe_cells()."""
+
+    @MissionModel
+    class BoundedModel:
+        def __init__(self, registrar: Registrar):
+            self.battery = registrar.linear(100.0, minimum=0.0, maximum=100.0)
+            registrar.resource("/battery", self.battery)
+
+    state = _ModelState(BoundedModel, {})
+    (cell,) = [c for c in state.describe_cells() if c.get("resource") == "/battery"]
+    assert cell["type"] == "linear"
+    assert cell["minimum"] == "0.0"
+    assert cell["maximum"] == "100.0"
+
+
+def test_linear_cell_without_bounds_stays_unbounded():
+    """Bounds are opt-in: an unbounded cell must not gain them implicitly.
+
+    Cumulative counters (data volume, total energy) are legitimately unbounded, and
+    silently clamping them would be a worse bug than the one bounds fix.
+    """
+
+    @MissionModel
+    class UnboundedModel:
+        def __init__(self, registrar: Registrar):
+            self.buffer = registrar.linear(0.0)
+            registrar.resource("/buffer", self.buffer)
+
+    state = _ModelState(UnboundedModel, {})
+    (cell,) = [c for c in state.describe_cells() if c.get("resource") == "/buffer"]
+    assert "minimum" not in cell
+    assert "maximum" not in cell
+
+
+def test_linear_cell_accepts_one_sided_bounds():
+    """minimum and maximum are independent -- a floor without a ceiling is valid."""
+
+    @MissionModel
+    class FloorModel:
+        def __init__(self, registrar: Registrar):
+            self.tank = registrar.linear(50.0, minimum=0.0)
+            registrar.resource("/tank", self.tank)
+
+    state = _ModelState(FloorModel, {})
+    (cell,) = [c for c in state.describe_cells() if c.get("resource") == "/tank"]
+    assert cell["minimum"] == "0.0"
+    assert "maximum" not in cell

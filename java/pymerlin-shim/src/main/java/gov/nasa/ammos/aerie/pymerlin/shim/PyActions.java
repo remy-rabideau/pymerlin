@@ -1,5 +1,7 @@
 package gov.nasa.ammos.aerie.pymerlin.shim;
 
+import org.graalvm.polyglot.Value;
+
 import java.util.function.BooleanSupplier;
 
 /**
@@ -47,8 +49,29 @@ public final class PyActions {
         return shim.directAsk(cellIndex);
     }
 
+    /**
+     * Read an evolving cell's value as the live Python object rather than its {@code str()}.
+     * <p>
+     * Evolving cells can hold types that do not survive a string round-trip -- a
+     * {@code Duration} stringifies to {@code "+00:00:00.0000.0"}, which nothing on the
+     * Python side can parse back. Returning the object avoids the conversion entirely.
+     * Returns {@code null} for non-evolving cells, whose callers use {@link #ask} instead.
+     */
+    public Object askObject(int cellIndex) {
+        return shim.directAskObject(cellIndex);
+    }
+
     public void emitCell(int cellIndex, String value) {
         shim.directEmitCell(cellIndex, value);
+    }
+
+    /**
+     * Write an evolving cell as the live Python object, the counterpart to
+     * {@link #askObject}. Avoids the str() round-trip that cannot represent every Python
+     * value type an evolving cell may hold.
+     */
+    public void emitCellObject(int cellIndex, Value value) {
+        shim.directEmitCellObject(cellIndex, value);
     }
 
     public void setRate(int cellIndex, double rate) {

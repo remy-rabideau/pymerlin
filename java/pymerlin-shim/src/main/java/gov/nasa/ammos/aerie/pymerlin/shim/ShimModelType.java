@@ -100,17 +100,25 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
      * A cell whose value evolves autonomously via a Python evolution function
      * (cell-evolution roadmap). State is held as a GraalPy {@link Value} (the raw
      * Python object), so {@code step()} can call the evolution function without
-     * per-step serialization. Effects are strings (same as {@link DiscreteCell}) —
-     * the Python side still sends the new value as a string via {@code emitCell()}.
+     * per-step serialization. Effects are Python objects too, so a value whose type has
+     * no faithful string form (a {@code Duration}, say) survives a write unchanged.
      */
     private record EvolvingCell(
-        Topic<String> topic,
+        // Effects carry the new value as a live Python object, not a string: an evolving
+        // cell's type is arbitrary Python, and str() is lossy for some of it (a Duration
+        // has no string form that parses back). String emits still work -- they are
+        // converted on the way in, see directEmitCell.
+        Topic<Value> topic,
         CellId<Value[]> cellId,
         Value evolutionFn,
         String valueType   // "float", "int", "bool", or "str"
     ) implements Cell {}
 
     private final Map<String, Cell> resourceCells = new HashMap<>();
+
+    // Python _parse_value, retained from instantiate(): string emits targeting an evolving
+    // cell must be converted to a typed Python object before becoming an effect.
+    private Value parseValueFn;
 
     // Indexed cell list — Python CellRef references cells by integer index (Phase 4, §7).
     // Populated during instantiate(); order matches the order Python's registrar.cells sees them.
@@ -247,6 +255,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
             List<Value> initialValues = bridge.getInitialValues();
             List<Value> resourceProjections = bridge.getResourceProjections();
             Value parseValueFn = bridge.getParseValueFn();
+            this.parseValueFn = parseValueFn;
 
             if (cells != null) {
                 for (int i = 0; i < cells.size(); i++) {
@@ -263,20 +272,35 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                         // per second between events, exposed as an Aerie RealDynamics resource.
                         double initial = parseDoubleOr(initialValue, 0.0);
                         double rate = cellMeta.has("rate") ? parseDoubleOr(cellMeta.get("rate").getAsString(), 0.0) : 0.0;
+                        // Absent bounds mean unbounded -- only clamp what the model asked to clamp.
+                        Double minimum = cellMeta.has("minimum") && !cellMeta.get("minimum").isJsonNull()
+                            ? parseDoubleOr(cellMeta.get("minimum").getAsString(), Double.NEGATIVE_INFINITY) : null;
+                        Double maximum = cellMeta.has("maximum") && !cellMeta.get("maximum").isJsonNull()
+                            ? parseDoubleOr(cellMeta.get("maximum").getAsString(), Double.POSITIVE_INFINITY) : null;
                         Topic<LinearEffect> topic = new Topic<>();
-                        CellId<double[]> cellId = allocateLinearCell(builder, initial, rate, topic);
+                        CellId<double[]> cellId = allocateLinearCell(builder, initial, rate, minimum, maximum, topic);
                         LinearCell lc = new LinearCell(topic, cellId);
                         cellsByIndex.add(lc);
 
                         if (resName != null) {
                             resourceCells.put(resName, lc);
                             final CellId<double[]> capturedCell = cellId;
+                            final Double capturedMin = minimum;
+                            final Double capturedMax = maximum;
                             builder.resource(resName, new Resource<RealDynamics>() {
                                 @Override public String getType() { return "real"; }
                                 @Override public OutputType<RealDynamics> getOutputType() { return realOutputType(); }
                                 @Override public RealDynamics getDynamics(Querier q) {
                                     double[] s = q.getState(capturedCell);
-                                    return RealDynamics.linear(s[0], s[1]);
+                                    double value = s[0];
+                                    double slope = s[1];
+                                    // Report a flat profile once pinned at a bound. RealDynamics
+                                    // is extrapolated between samples, so a battery sitting at
+                                    // 100% with a positive rate would otherwise be DRAWN climbing
+                                    // past 100 even though step() clamps the stored value.
+                                    if (capturedMax != null && value >= capturedMax && slope > 0) slope = 0.0;
+                                    if (capturedMin != null && value <= capturedMin && slope < 0) slope = 0.0;
+                                    return RealDynamics.linear(value, slope);
                                 }
                             });
                         }
@@ -286,7 +310,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                     // Cell-evolution roadmap: cells with a Python evolution function get an
                     // EvolvingCell whose step() calls the function on every time advance.
                     if (evolutionFn != null) {
-                        Topic<String> topic = new Topic<>();
+                        Topic<Value> topic = new Topic<>();
                         // Take the initial value as the live Python object. It must NOT be
                         // rebuilt from cellMeta's `initial` string: that is str(value), and
                         // _parse_value dispatches on its `reference` argument's runtime type,
@@ -561,10 +585,18 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         } else if (cell instanceof LinearCell lc) {
             emit(new LinearEffect(parseDoubleOr(value, 0.0), null), lc.topic());
         } else if (cell instanceof EvolvingCell ec) {
-            emit(value, ec.topic());
+            emit(toEvolvingValue(ec, value), ec.topic());
         } else {
             System.err.println("[PyMerlin] emit for unknown resource: " + resourceName);
         }
+    }
+
+    /**
+     * Convert a string emit into the typed Python object an evolving cell stores, using the
+     * cell's current value as the type reference {@code _parse_value} dispatches on.
+     */
+    private Value toEvolvingValue(EvolvingCell ec, String value) {
+        return parseValueFn.execute(value, ask(ec.cellId())[0]);
     }
 
     // -----------------------------------------------------------------
@@ -586,15 +618,46 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         return ask(((DiscreteCell) cell).cellId())[0];
     }
 
+    /**
+     * Read an evolving cell as the live Python object, bypassing the string round-trip
+     * {@link #directAsk} performs. Returns null for any other cell kind.
+     * <p>
+     * Needed because an evolving cell's value type is arbitrary Python: a Duration-valued
+     * cell (pymerlin.clock) stringifies to "+00:00:00.0000.0", and no parse on the Python
+     * side recovers a Duration from that. Handing back the object sidesteps the problem
+     * rather than adding a parser per type.
+     */
+    Object directAskObject(int cellIndex) {
+        Cell cell = cellsByIndex.get(cellIndex);
+        if (cell instanceof EvolvingCell ec) {
+            return ask(ec.cellId())[0];
+        }
+        return null;
+    }
+
     void directEmitCell(int cellIndex, String value) {
         Cell cell = cellsByIndex.get(cellIndex);
         if (cell instanceof LinearCell lc) {
             // Discrete jump of the integrated value (rate unchanged).
             emit(new LinearEffect(parseDoubleOr(value, 0.0), null), lc.topic());
         } else if (cell instanceof EvolvingCell ec) {
-            emit(value, ec.topic());
+            emit(toEvolvingValue(ec, value), ec.topic());
         } else {
             emit(value, ((DiscreteCell) cell).topic());
+        }
+    }
+
+    /**
+     * Write an evolving cell from a live Python object, skipping the string conversion
+     * {@link #directEmitCell} performs. Counterpart to {@link #directAskObject}.
+     */
+    void directEmitCellObject(int cellIndex, Value value) {
+        Cell cell = cellsByIndex.get(cellIndex);
+        if (cell instanceof EvolvingCell ec) {
+            emit(value, ec.topic());
+        } else {
+            // Not an evolving cell -- fall back to the string path so the write is not lost.
+            directEmitCell(cellIndex, value == null ? "" : value.toString());
         }
     }
 
@@ -623,9 +686,27 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
      * like {@code contrib}'s {@code LinearIntegrationCell}, so a {@code RealDynamics} resource
      * reading this cell ramps smoothly between discrete effects instead of stepping.
      */
-    private static CellId<double[]> allocateLinearCell(Initializer builder, double initial, double rate, Topic<LinearEffect> topic) {
+    /** Clamp {@code v} into [minimum, maximum]; either bound may be null (unbounded). */
+    private static double clampTo(double v, Double minimum, Double maximum) {
+        if (minimum != null && v < minimum) return minimum;
+        if (maximum != null && v > maximum) return maximum;
+        return v;
+    }
+
+    /**
+     * Allocate a continuously-integrating cell, optionally bounded.
+     * <p>
+     * {@code minimum}/{@code maximum} may be null (unbounded). When set, they clamp both the
+     * integrated value and discrete jumps, mirroring Aerie's {@code ClampedIntegrator}: a
+     * physically bounded quantity — battery charge, a tank, a buffer — otherwise integrates
+     * straight past its limit and a battery at 100% keeps charging to 130%.
+     */
+    private static CellId<double[]> allocateLinearCell(
+            Initializer builder, double initial, double rate,
+            Double minimum, Double maximum, Topic<LinearEffect> topic) {
+        final double initialClamped = clampTo(initial, minimum, maximum);
         return builder.allocate(
-            new double[]{initial, rate},
+            new double[]{initialClamped, rate},
             new CellType<LinearEffect, double[]>() {
                 @Override
                 public EffectTrait<LinearEffect> getEffectType() {
@@ -641,12 +722,16 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                     };
                 }
                 @Override public void apply(double[] state, LinearEffect effect) {
-                    if (effect.newValue() != null) state[0] = effect.newValue();
+                    // Clamp discrete jumps too, not just integration -- an emit past the
+                    // bound would otherwise park the value out of range until the next step.
+                    if (effect.newValue() != null) state[0] = clampTo(effect.newValue(), minimum, maximum);
                     if (effect.newRate()  != null) state[1] = effect.newRate();
                 }
                 @Override public double[] duplicate(double[] state) { return new double[]{state[0], state[1]}; }
                 @Override public void step(double[] state, Duration elapsed) {
-                    state[0] += state[1] * elapsed.ratioOver(Duration.SECOND);
+                    state[0] = clampTo(
+                        state[0] + state[1] * elapsed.ratioOver(Duration.SECOND),
+                        minimum, maximum);
                 }
             },
             e -> e,
@@ -669,23 +754,23 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
      */
     private static CellId<Value[]> allocateEvolvingCell(
             Initializer builder, Value initialValue, Value evolutionFn,
-            Value parseValueFn, Duration resolution, Topic<String> topic) {
+            Value parseValueFn, Duration resolution, Topic<Value> topic) {
         return builder.allocate(
             new Value[]{initialValue},
-            new CellType<String, Value[]>() {
+            new CellType<Value, Value[]>() {
                 @Override
-                public EffectTrait<String> getEffectType() {
+                public EffectTrait<Value> getEffectType() {
                     return new EffectTrait<>() {
-                        @Override public String empty()                           { return null; }
-                        @Override public String sequentially(String a, String b) { return b != null ? b : a; }
-                        @Override public String concurrently(String a, String b) { return b != null ? b : a; }
+                        @Override public Value empty()                        { return null; }
+                        @Override public Value sequentially(Value a, Value b) { return b != null ? b : a; }
+                        @Override public Value concurrently(Value a, Value b) { return b != null ? b : a; }
                     };
                 }
-                @Override public void apply(Value[] state, String effect) {
+                @Override public void apply(Value[] state, Value effect) {
                     if (effect != null) {
-                        // The effect is a string from emitCell(); convert back to a Python
-                        // object so the evolution function receives the right type.
-                        state[0] = parseValueFn.execute(effect, state[0]);
+                        // Already a Python object -- directEmitCell converts string emits
+                        // before they reach here, so no parsing is needed at this point.
+                        state[0] = effect;
                     }
                 }
                 @Override public Value[] duplicate(Value[] state) { return new Value[]{state[0]}; }

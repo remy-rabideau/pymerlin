@@ -293,12 +293,21 @@ class _ModelState:
             if getattr(cell_ref, "_is_linear", False):
                 # Continuously-integrating cell (roadmap §7.2): Java backs it with a
                 # RealDynamics resource that ramps by `rate` per second between events.
-                cells.append({
+                linear_desc = {
                     "type": "linear",
                     "initial": str(float(current)),
                     "rate": str(float(getattr(cell_ref, "_initial_rate", 0.0))),
                     "resource": res_name,
-                })
+                }
+                # Optional integration bounds (Aerie's ClampedIntegrator equivalent).
+                # Omitted entirely when unset, so an unbounded cell stays unbounded.
+                minimum = getattr(cell_ref, "_minimum", None)
+                maximum = getattr(cell_ref, "_maximum", None)
+                if minimum is not None:
+                    linear_desc["minimum"] = str(float(minimum))
+                if maximum is not None:
+                    linear_desc["maximum"] = str(float(maximum))
+                cells.append(linear_desc)
                 continue
             # Type the resource by what it PUBLISHES, not by the cell's raw state: a cell
             # holding (temperature, heat_input) publishes a float, and typing it from the

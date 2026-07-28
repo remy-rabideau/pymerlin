@@ -33,12 +33,13 @@ class Registrar:
         renders acceptably.
         """
         ref = CellRef()
+        ref._is_evolving = evolution is not None
         if resolution is not None:
             ref._resolution = resolution
         self.cells.append((ref, initial_value, evolution))
         return ref
 
-    def linear(self, initial_value, rate=0.0):
+    def linear(self, initial_value, rate=0.0, minimum=None, maximum=None):
         """
         Declare a continuously-integrating (linear) cell (roadmap §7.2).
 
@@ -47,8 +48,17 @@ class Registrar:
         of snapshotting the last emitted value. ``set_rate(...)`` changes the slope (e.g.
         start/stop draining); ``emit(...)`` still applies a discrete jump to the value.
         Scoped to linear dynamics only, which is all Aerie's ``RealDynamics`` can represent.
+
+        ``minimum`` / ``maximum`` bound the integrated value, mirroring Aerie's
+        ``ClampedIntegrator``. Without them a quantity that is physically bounded — a
+        battery's state of charge, a tank, a buffer — integrates straight past its limit
+        (a battery charging at 100% keeps climbing to 130%, 200%, ...). Both are optional
+        and independent; leave them unset for genuinely unbounded quantities like
+        cumulative counters.
         """
         ref = LinearCellRef(float(rate))
+        ref._minimum = None if minimum is None else float(minimum)
+        ref._maximum = None if maximum is None else float(maximum)
         self.cells.append((ref, float(initial_value), None))
         return ref
 
@@ -177,6 +187,7 @@ class CellRef(Gettable):
         self._cell_index = None    # sequential int, set by _ModelState (Phase 4)
         self._value_type = str     # type of the cell value, set by _ModelState
         self._resolution = None    # max re-sample interval for evolving cells (Duration)
+        self._is_evolving = False  # True when declared with evolution=, set by Registrar.cell
 
     def emit(self, event):
         if not callable(event):
@@ -186,7 +197,13 @@ class CellRef(Gettable):
         _globals.cell_values_by_id[self.id] = new_val
         ja = _globals.java_actions
         if ja is not None and self._cell_index is not None:
-            ja.emitCell(self._cell_index, str(new_val))
+            # Mirror _get: an evolving cell keeps the live Python object on the Java side,
+            # so hand the object over rather than str(new_val). Duration in particular has
+            # no string form the Java side can parse back into a Duration.
+            if self._is_evolving:
+                ja.emitCellObject(self._cell_index, new_val)
+            else:
+                ja.emitCell(self._cell_index, str(new_val))
 
     def set(self, new_value):
         self.emit(set_value(new_value))
@@ -197,6 +214,14 @@ class CellRef(Gettable):
     def _get(self):
         ja = _globals.java_actions
         if ja is not None and self._cell_index is not None:
+            # An evolving cell holds a live Python object on the Java side, so read it
+            # back directly instead of via str(). The string path cannot represent every
+            # value type -- a Duration stringifies to "+00:00:00.0000.0", which no parse
+            # here recovers -- and round-tripping floats through text loses precision.
+            if self._is_evolving:
+                obj = ja.askObject(self._cell_index)
+                if obj is not None:
+                    return obj
             val_str = ja.ask(self._cell_index)
             return self._convert_from_java(val_str)
         return _globals.cell_values_by_id[self.id]
@@ -250,6 +275,9 @@ class LinearCellRef(CellRef):
         self._is_linear = True
         self._initial_rate = float(initial_rate)
         self._value_type = float
+        # Optional integration bounds (see Registrar.linear); None means unbounded.
+        self._minimum = None
+        self._maximum = None
 
     def set_rate(self, rate):
         """Set the cell's rate of change (units per second) as a discrete event."""
