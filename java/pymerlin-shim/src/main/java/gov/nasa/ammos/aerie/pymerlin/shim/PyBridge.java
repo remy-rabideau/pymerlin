@@ -1,8 +1,11 @@
 package gov.nasa.ammos.aerie.pymerlin.shim;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import org.graalvm.polyglot.Value;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -66,7 +69,14 @@ public interface PyBridge extends AutoCloseable {
      * Cell indices match the Python {@code registrar.cells} order.
      * {@code resource} is null for cells not registered as resources.
      */
-    com.google.gson.JsonArray getCells() throws Exception;
+    JsonArray getCells() throws Exception;
+
+    /**
+     * Query the evolution functions for each cell (cell-evolution roadmap, step 2).
+     * Returns a list of GraalPy {@link org.graalvm.polyglot.Value} handles, one per cell
+     * in registrar.cells order. Elements are {@code null} for cells with no evolution.
+     */
+    List<Value> getEvolutionFunctions() throws Exception;
 
     /**
      * Run an activity to completion on the calling thread (a Java {@code ThreadedTask}),

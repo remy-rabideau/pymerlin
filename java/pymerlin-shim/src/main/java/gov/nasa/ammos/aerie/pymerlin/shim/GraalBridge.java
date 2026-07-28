@@ -10,6 +10,8 @@ import org.graalvm.polyglot.Value;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -147,17 +149,31 @@ public final class GraalBridge implements PyBridge {
     }
 
     @Override
-    public com.google.gson.JsonArray getCells() throws Exception {
+    public JsonArray getCells() throws Exception {
         Value describeCells = modelState().getMember("describe_cells");
         Value result = describeCells.execute();
         // result is a Python list of dicts — convert to JsonArray
-        com.google.gson.JsonArray arr = new com.google.gson.JsonArray();
+        JsonArray arr = new JsonArray();
         if (result != null && !result.isNull() && result.hasArrayElements()) {
             for (long i = 0; i < result.getArraySize(); i++) {
                 arr.add(valueToJsonElement(result.getArrayElement(i)));
             }
         }
         return arr;
+    }
+
+    @Override
+    public List<Value> getEvolutionFunctions() throws Exception {
+        Value getEvFns = modelState().getMember("get_evolution_functions");
+        Value result = getEvFns.execute();
+        List<Value> fns = new ArrayList<>();
+        if (result != null && !result.isNull() && result.hasArrayElements()) {
+            for (long i = 0; i < result.getArraySize(); i++) {
+                Value v = result.getArrayElement(i);
+                fns.add((v == null || v.isNull()) ? null : v);
+            }
+        }
+        return fns;
     }
 
     // ------------------------------------------------------------------

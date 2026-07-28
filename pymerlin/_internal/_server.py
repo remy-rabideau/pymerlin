@@ -295,12 +295,20 @@ class _ModelState:
                 vtype = "float"
             else:
                 vtype = "str"
-            cells.append({
+            desc = {
                 "initial": str(current),
                 "resource": res_name,
                 "type": vtype,
-            })
+            }
+            if _evolution is not None:
+                desc["evolving"] = True
+            cells.append(desc)
         return cells
+
+    def get_evolution_functions(self) -> list:
+        """Return the evolution callable for each cell, or None if the cell has
+        no evolution.  Order matches registrar.cells / describe_cells()."""
+        return [ev for (_ref, _iv, ev) in self._registrar.cells]
 
     def get_resource_value(self, name: str) -> str:
         for res_name, getter in self._registrar.resources:
