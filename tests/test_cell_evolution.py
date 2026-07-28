@@ -577,3 +577,106 @@ def test_linear_cell_accepts_one_sided_bounds():
     (cell,) = [c for c in state.describe_cells() if c.get("resource") == "/tank"]
     assert cell["minimum"] == "0.0"
     assert "maximum" not in cell
+
+
+# ---------------------------------------------------------------------------
+# Tests — bound-crossing expiry for linear cells
+#
+# Clamping the stored value is not enough on its own. A real profile segment is
+# {initial, rate} and is EXTRAPOLATED across its extent, so a battery at 99.583%
+# charging into a 4-minute segment was drawn climbing to 100.897 even though
+# step() pinned the stored value at 100. The cell has to EXPIRE at the crossing
+# so the engine cuts a segment there.
+#
+# These mirror ShimModelType's getExpiry/getDynamics arithmetic in Python. They
+# pin the maths; the Java wiring itself needs a GraalPy host (see §7 of
+# linear_evolution_roadmap.md for how that split is handled).
+# ---------------------------------------------------------------------------
+
+import math as _math
+
+
+def _expiry_seconds(value, rate, minimum, maximum):
+    """Mirror of ShimModelType's linear-cell getExpiry."""
+    if rate == 0.0:
+        return None
+    bound = maximum if rate > 0 else minimum
+    if bound is None:
+        return None
+    seconds = (bound - value) / rate
+    if seconds <= 0.0:
+        return None
+    return _math.ceil(seconds * 1e6) / 1e6
+
+
+def _reported_slope(value, rate, minimum, maximum):
+    """Mirror of ShimModelType's linear-cell getDynamics slope-zeroing."""
+    eps = 1e-9
+    if maximum is not None and value >= maximum - eps and rate > 0:
+        return 0.0
+    if minimum is not None and value <= minimum + eps and rate < 0:
+        return 0.0
+    return rate
+
+
+def test_expiry_schedules_the_bound_crossing():
+    """A charging battery expires exactly when it would reach 100%."""
+    rate = (20.0 / 100.0) * (100.0 / 3600.0)  # +20 W surplus, 100 Wh capacity
+    expiry = _expiry_seconds(99.583, rate, 0.0, 100.0)
+    assert expiry is not None
+    # 0.417% remaining at 0.005556 %/s
+    assert abs(expiry - 75.06) < 0.01
+    # The segment that expiry produces must land ON the bound, not past it.
+    assert abs(99.583 + rate * expiry - 100.0) < 1e-6
+
+
+def test_segment_never_extrapolates_past_the_bound():
+    """The reported segment must not exceed the maximum over its own extent.
+
+    Regression: the observed profile ran 99.583 -> 100.89674 because the segment
+    kept its positive slope for a full 4 minutes with no expiry to cut it.
+    """
+    rate = (20.0 / 100.0) * (100.0 / 3600.0)
+    value = 99.583
+    expiry = _expiry_seconds(value, rate, 0.0, 100.0)
+    slope = _reported_slope(value, rate, 0.0, 100.0)
+
+    # Expiry rounds UP to the next microsecond (expiring early would leave the engine
+    # re-scheduling the same crossing), so the segment may exceed the bound by at most
+    # one microsecond of slope. That is invisible in a profile; the 0.897 the bug
+    # produced was not.
+    one_micro_of_slope = abs(slope) * 1e-6
+    end_of_segment = value + slope * expiry
+    assert end_of_segment <= 100.0 + one_micro_of_slope, f"segment overshot to {end_of_segment}"
+
+    # Without the expiry the same slope over the real 4-minute gap overshoots --
+    # this is the bug, asserted so the test explains itself.
+    assert value + slope * 236.5 > 100.5
+
+
+def test_slope_is_flat_once_pinned_at_a_bound():
+    """At the bound the reported slope is zero, so the next segment is flat."""
+    rate = (20.0 / 100.0) * (100.0 / 3600.0)
+    assert _reported_slope(100.0, rate, 0.0, 100.0) == 0.0
+    # ...and a hair under the bound still counts, since the crossing lands there
+    # through floating-point arithmetic.
+    assert _reported_slope(100.0 - 1e-12, rate, 0.0, 100.0) == 0.0
+
+
+def test_discharging_is_unaffected_until_the_floor():
+    """Only the bound the cell is heading TOWARD matters."""
+    rate = (-30.0 / 100.0) * (100.0 / 3600.0)
+    # Discharging from 100% keeps its slope -- the max is behind it.
+    assert _reported_slope(100.0, rate, 0.0, 100.0) == rate
+    # Expiry targets the floor, not the ceiling.
+    expiry = _expiry_seconds(100.0, rate, 0.0, 100.0)
+    assert abs(100.0 + rate * expiry - 0.0) < 1e-6
+    # At the floor, flat.
+    assert _reported_slope(0.0, rate, 0.0, 100.0) == 0.0
+
+
+def test_unbounded_cell_never_expires():
+    """Cumulative counters have no bound to cross, so they schedule nothing."""
+    assert _expiry_seconds(50.0, 1.0, None, None) is None
+    assert _expiry_seconds(50.0, 0.0, 0.0, 100.0) is None      # no rate
+    assert _expiry_seconds(100.0, 1.0, 0.0, 100.0) is None     # already at bound

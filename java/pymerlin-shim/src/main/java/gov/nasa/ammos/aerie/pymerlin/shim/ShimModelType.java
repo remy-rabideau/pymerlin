@@ -295,11 +295,18 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                                     double value = s[0];
                                     double slope = s[1];
                                     // Report a flat profile once pinned at a bound. RealDynamics
-                                    // is extrapolated between samples, so a battery sitting at
+                                    // is extrapolated across the segment, so a battery sitting at
                                     // 100% with a positive rate would otherwise be DRAWN climbing
                                     // past 100 even though step() clamps the stored value.
-                                    if (capturedMax != null && value >= capturedMax && slope > 0) slope = 0.0;
-                                    if (capturedMin != null && value <= capturedMin && slope < 0) slope = 0.0;
+                                    //
+                                    // The epsilon matters: getExpiry schedules the crossing, and
+                                    // the value at that instant can land a hair under the bound
+                                    // through floating-point error. An exact `>=` would then miss,
+                                    // leaving a segment that ramps visibly past the bound -- the
+                                    // whole bug this guards against.
+                                    final double eps = 1e-9;
+                                    if (capturedMax != null && value >= capturedMax - eps && slope > 0) slope = 0.0;
+                                    if (capturedMin != null && value <= capturedMin + eps && slope < 0) slope = 0.0;
                                     return RealDynamics.linear(value, slope);
                                 }
                             });
@@ -732,6 +739,36 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                     state[0] = clampTo(
                         state[0] + state[1] * elapsed.ratioOver(Duration.SECOND),
                         minimum, maximum);
+                }
+                /**
+                 * Expire when the ramp is due to hit a bound, so the engine cuts a segment
+                 * there.
+                 * <p>
+                 * Clamping the stored value in {@code step()} is not sufficient on its own:
+                 * a real profile segment is {@code {initial, rate}} and gets EXTRAPOLATED
+                 * across its whole extent. A battery at 99.58% charging into a segment with
+                 * no other event in it is drawn climbing straight past 100 to wherever the
+                 * slope ends up, even though the stored value stopped at 100. Expiring at
+                 * the crossing splits that into a rising segment that ends exactly at the
+                 * bound and a flat one after it.
+                 */
+                @Override public Optional<Duration> getExpiry(double[] state) {
+                    double value = state[0];
+                    double rate  = state[1];
+                    if (rate == 0.0) return Optional.empty();
+                    Double bound = rate > 0 ? maximum : minimum;
+                    if (bound == null) return Optional.empty();
+                    double secondsToBound = (bound - value) / rate;
+                    // Already at or past the bound: step() pins the value and getDynamics
+                    // reports a flat slope, so there is nothing further to schedule.
+                    if (secondsToBound <= 0.0) return Optional.empty();
+                    // Round UP, at microsecond granularity: expiring even slightly early
+                    // leaves the engine re-querying just short of the bound and scheduling
+                    // the same crossing again, and rounding to a coarser unit would leave a
+                    // visible sliver of overshoot in the segment before the flat one.
+                    double microsToBound = secondsToBound * 1_000_000.0;
+                    if (microsToBound > (double) Long.MAX_VALUE) return Optional.empty();
+                    return Optional.of(Duration.of((long) Math.ceil(microsToBound), Duration.MICROSECONDS));
                 }
             },
             e -> e,
