@@ -12,9 +12,8 @@ from queue import Queue
 from pymerlin._internal import _globals
 from pymerlin._internal._registrar import Registrar
 from pymerlin._internal._schedule import Directive
-from pymerlin._internal._task_status import Delayed, Awaiting
-from pymerlin.duration import Duration, MICROSECONDS
-
+from pymerlin._internal._task_status import Awaiting, Delayed
+from pymerlin.duration import MICROSECONDS, Duration
 
 ProfileSegment = namedtuple("ProfileSegment", "extent dynamics")
 Span = namedtuple("Span", "type start duration")
@@ -51,9 +50,12 @@ def simulate(model_class, schedule, duration):
 
     model = model_class(registrar)
 
-    for cell_ref, initial_value, _evolution in registrar.cells:
+    evolving_cells = []  # (cell_ref, evolution_fn) for cells with evolution
+    for cell_ref, initial_value, evolution in registrar.cells:
         cell_ref.id = id(cell_ref)
         cell_values[id(cell_ref)] = initial_value
+        if evolution is not None:
+            evolving_cells.append((cell_ref, evolution))
 
     _globals.cell_values_by_id = cell_values
 
@@ -85,12 +87,19 @@ def simulate(model_class, schedule, duration):
         if isinstance(directive, Directive):
             name, args = directive.type, directive.args
         else:
-            raise ValueError(f"Expected Directive, got {type(directive)}")
+            raise TypeError(f"Expected Directive, got {type(directive)}")
         pending.append((start_us, _next_id(), name, args, None))
 
     pending.sort(key=lambda x: x[0])
 
-    now_us = 0
+    def _apply_evolution(elapsed_us):
+        """Step all evolving cells forward by elapsed_us microseconds."""
+        if elapsed_us <= 0 or not evolving_cells:
+            return
+        elapsed = Duration.of(elapsed_us, MICROSECONDS)
+        for cell_ref, evolution_fn in evolving_cells:
+            current = cell_values[cell_ref.id]
+            cell_values[cell_ref.id] = evolution_fn(current, elapsed)
 
     def _snapshot_profiles(at_us):
         """Close the current segment at at_us using whatever value was current since prev_snapshot_us."""
@@ -100,6 +109,8 @@ def simulate(model_class, schedule, duration):
             for res_name, getter in registrar.resources:
                 prev_values[res_name] = getter()
             return
+        # Step evolving cells forward before closing the segment.
+        _apply_evolution(at_us - prev_snapshot_us)
         for res_name, getter in registrar.resources:
             profile_segments_raw[res_name].append(
                 (prev_snapshot_us, at_us, prev_values[res_name])
@@ -166,8 +177,8 @@ def simulate(model_class, schedule, duration):
 
             if isinstance(status, Delayed):
                 step_us = int(status.duration.to_number_in(MICROSECONDS))
-                _snapshot_profiles(current_us)
                 current_us += step_us
+                _snapshot_profiles(current_us)
                 finish_us = current_us
                 inbox.put("resume")
 
@@ -175,8 +186,8 @@ def simulate(model_class, schedule, duration):
                 condition = status.condition
                 # Poll condition: advance 1µs at a time until true
                 while not condition():
-                    _snapshot_profiles(current_us)
                     current_us += 1
+                    _snapshot_profiles(current_us)
                 finish_us = current_us
                 inbox.put("resume")
 
@@ -188,13 +199,12 @@ def simulate(model_class, schedule, duration):
 
     # --- main simulation loop ---
     while pending:
-        start_us, task_id, act_name, args, parent_id = pending.pop(0)
+        start_us, _task_id, act_name, args, _parent_id = pending.pop(0)
 
         if start_us > duration_us:
             break
 
         _snapshot_profiles(start_us)
-        now_us = start_us
 
         try:
             finish_us = _run_activity(act_name, args, start_us)

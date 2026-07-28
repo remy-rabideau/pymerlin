@@ -12,6 +12,7 @@ through `ModelActions.ask(cellId)`, registering read dependencies in QueryContex
 waitUntil (Phase 4, roadmap §7).
 """
 
+import ast
 import importlib.util
 import inspect
 import json
@@ -21,8 +22,8 @@ from typing import Any
 
 from pymerlin._internal import _globals
 from pymerlin._internal._registrar import Registrar
-from pymerlin._internal._task_status import Delayed, Awaiting, Calling
-
+from pymerlin._internal._task_status import Awaiting, Calling, Delayed
+from pymerlin.duration import MICROSECONDS, Duration
 
 # ---------------------------------------------------------------------------
 # Model loader
@@ -259,12 +260,24 @@ class _ModelState:
             cell_ref._value_type = type(initial_value)
             self.cell_values[id(cell_ref)] = initial_value
 
+        # Associate each resource with the cell that backs it. The Java path registers
+        # resources per-cell (see ShimModelType.instantiate), so a resource that cannot be
+        # traced to a cell here is never created on the Java side at all -- it silently
+        # disappears from the simulation rather than failing loudly.
         for resource_name, getter in self._registrar.resources:
+            # A Gettable derived from a cell (cell.map(...)) carries its origin explicitly.
+            source = getattr(getter, "_source_cell", None)
+            if source is None:
+                source = getattr(getattr(getter, "__self__", None), "_source_cell", None)
+            if source is not None:
+                self.cell_id_to_resource[id(source)] = resource_name
+                continue
             for cell_ref, _iv, _ev in self._registrar.cells:
                 if getter == cell_ref.get or (
                     hasattr(getter, "__self__") and getter.__self__ is cell_ref
                 ):
                     self.cell_id_to_resource[id(cell_ref)] = resource_name
+                    break
 
         _globals.cell_values_by_id = self.cell_values
         _globals._current_context[2] = model_class
@@ -287,11 +300,21 @@ class _ModelState:
                     "resource": res_name,
                 })
                 continue
-            if isinstance(current, bool):
+            # Type the resource by what it PUBLISHES, not by the cell's raw state: a cell
+            # holding (temperature, heat_input) publishes a float, and typing it from the
+            # tuple would declare a string resource in Aerie.
+            typed_from = current
+            projection = self._resource_projection_for(cell_ref)
+            if projection is not None:
+                try:
+                    typed_from = projection(current)
+                except Exception:
+                    typed_from = current
+            if isinstance(typed_from, bool):
                 vtype = "bool"
-            elif isinstance(current, int):
+            elif isinstance(typed_from, int):
                 vtype = "int"
-            elif isinstance(current, float):
+            elif isinstance(typed_from, float):
                 vtype = "float"
             else:
                 vtype = "str"
@@ -302,13 +325,38 @@ class _ModelState:
             }
             if _evolution is not None:
                 desc["evolving"] = True
+                # Max interval before the engine re-samples this cell, in microseconds
+                # (cell-evolution roadmap §5.3 -- CellType.getExpiry). Absent means "never
+                # expires", which is right for linear-in-time evolution but renders
+                # nonlinear evolution as a single cliff between activity boundaries.
+                resolution = getattr(cell_ref, "_resolution", None)
+                if resolution is not None:
+                    desc["resolution_micros"] = str(
+                        int(resolution.to_number_in(MICROSECONDS)))
             cells.append(desc)
         return cells
 
     def get_evolution_functions(self) -> list:
         """Return the evolution callable for each cell, or None if the cell has
-        no evolution.  Order matches registrar.cells / describe_cells()."""
-        return [ev for (_ref, _iv, ev) in self._registrar.cells]
+        no evolution.  Order matches registrar.cells / describe_cells().
+        Each non-None entry is wrapped so Java's CellType.step() can call it
+        with (currentValue, elapsedMicros) directly."""
+        return [_wrap_evolution(ev) if ev is not None else None
+                for (_ref, _iv, ev) in self._registrar.cells]
+
+    def get_initial_values(self) -> list:
+        """Return each cell's initial value as a live Python object (not a string).
+        Order matches registrar.cells / describe_cells().
+
+        Evolving cells need this because describe_cells() only carries `initial` as
+        str(value), and a str cannot be turned back into e.g. a tuple or a Duration
+        without already knowing the target type. Handing Java the real object instead
+        keeps the typed value intact from the very first step() -- reconstructing it
+        from its repr is both lossy and unnecessary, since the object is right here."""
+        values = []
+        for cell_ref, initial_value, _ev in self._registrar.cells:
+            values.append(_globals.cell_values_by_id.get(cell_ref.id, initial_value))
+        return values
 
     def get_resource_value(self, name: str) -> str:
         for res_name, getter in self._registrar.resources:
@@ -316,8 +364,81 @@ class _ModelState:
                 return str(getter())
         raise KeyError(f"Unknown resource: {name!r}")
 
+    def _resource_projection_for(self, cell_ref):
+        """The raw-value -> resource-value function for `cell_ref`, or None."""
+        for _res_name, getter in self._registrar.resources:
+            source = getattr(getter, "_source_cell", None)
+            if source is cell_ref:
+                return getattr(getter, "_projection", None)
+        return None
+
+    def get_resource_projections(self) -> list:
+        """Return, per cell (registrar.cells order), a callable that turns the cell's raw
+        value into its resource value -- or None where the resource IS the raw value.
+
+        A resource declared as `cell.map(fn)` shows fn(value), not the value: an evolving
+        cell holding (temperature, heat_input) publishes just the temperature. Java's
+        resource getter holds the raw cell state, so it needs this to project before
+        stringifying, or the profile shows the whole tuple."""
+        by_cell = {}
+        for res_name, getter in self._registrar.resources:
+            source = getattr(getter, "_source_cell", None)
+            if source is None:
+                source = getattr(getattr(getter, "__self__", None), "_source_cell", None)
+            # Only a derived getter needs projecting; a bare cell.get is already the value.
+            projection = getattr(getter, "_projection", None)
+            if source is not None and projection is not None:
+                by_cell[id(source)] = projection
+
+        projections = []
+        for cell_ref, _iv, _ev in self._registrar.cells:
+            fn = by_cell.get(id(cell_ref))
+            projections.append(_wrap_projection(fn) if fn is not None else None)
+        return projections
+
     def describe_resources(self) -> dict:
         return _describe_resources(self._registrar)
+
+
+# ---------------------------------------------------------------------------
+# Cell evolution helpers (cell-evolution roadmap)
+# ---------------------------------------------------------------------------
+
+def _wrap_projection(fn):
+    """Wrap a resource projection so Java can call it with a raw cell value and get back
+    the resource's value as a string, ready to hand to the profile."""
+    def _projected(value):
+        return str(fn(value))
+    return _projected
+
+
+def _wrap_evolution(fn):
+    """Wrap a user evolution function so Java's CellType.step() can call it with
+    (currentValue, elapsedMicros) and get back the new Python value.
+    The user's function signature is fn(current_value, elapsed_duration)."""
+    def _stepped(current, micros):
+        return fn(current, Duration.of(int(micros), MICROSECONDS))
+    return _stepped
+
+
+def _parse_value(value_str, reference):
+    """Convert a string value from Java (emitCell) back to the Python type matching
+    `reference` (the current cell Value). Used by EvolvingCell.apply() on the Java side.
+
+    NOTE: `reference` must be the live Python cell value, never the incoming string --
+    dispatch is on the reference's runtime type, so passing the string as both arguments
+    makes every branch fall through to `str` and silently stringifies the cell."""
+    if isinstance(reference, float):
+        return float(value_str)
+    if isinstance(reference, int):
+        return int(float(value_str))
+    if isinstance(reference, bool):
+        return str(value_str).lower() in ("true", "1")
+    if isinstance(reference, tuple):
+        return ast.literal_eval(str(value_str))
+    if isinstance(reference, list):
+        return ast.literal_eval(str(value_str))
+    return str(value_str)
 
 
 # ---------------------------------------------------------------------------

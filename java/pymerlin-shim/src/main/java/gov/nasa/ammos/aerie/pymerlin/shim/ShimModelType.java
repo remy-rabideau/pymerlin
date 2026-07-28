@@ -72,9 +72,10 @@ import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.waitUntil;
 public final class ShimModelType implements ModelType<Map<String, SerializedValue>, Unit> {
 
     // --- per-resource cell bookkeeping ---
-    // A cell is either discrete (snapshots the last emit'd value, String-backed) or linear
-    // (continuously integrates value + rate·t, backed by RealDynamics — roadmap §7.2).
-    private sealed interface Cell permits DiscreteCell, LinearCell {}
+    // A cell is discrete (snapshots the last emit'd value, String-backed), linear
+    // (continuously integrates value + rate·t, backed by RealDynamics — roadmap §7.2),
+    // or evolving (autonomously stepped by a Python evolution function — cell-evolution roadmap).
+    private sealed interface Cell permits DiscreteCell, LinearCell, EvolvingCell {}
 
     private record DiscreteCell(
         Topic<String> topic,
@@ -94,6 +95,20 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
      * String cell's trait — pymerlin runs one activity per cell per tick.
      */
     private record LinearEffect(Double newValue, Double newRate) {}
+
+    /**
+     * A cell whose value evolves autonomously via a Python evolution function
+     * (cell-evolution roadmap). State is held as a GraalPy {@link Value} (the raw
+     * Python object), so {@code step()} can call the evolution function without
+     * per-step serialization. Effects are strings (same as {@link DiscreteCell}) —
+     * the Python side still sends the new value as a string via {@code emitCell()}.
+     */
+    private record EvolvingCell(
+        Topic<String> topic,
+        CellId<Value[]> cellId,
+        Value evolutionFn,
+        String valueType   // "float", "int", "bool", or "str"
+    ) implements Cell {}
 
     private final Map<String, Cell> resourceCells = new HashMap<>();
 
@@ -228,6 +243,11 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         // on the Python side maps directly to cellsByIndex on the Java side.
         try {
             JsonArray cells = bridge.getCells();
+            List<Value> evolutionFns = bridge.getEvolutionFunctions();
+            List<Value> initialValues = bridge.getInitialValues();
+            List<Value> resourceProjections = bridge.getResourceProjections();
+            Value parseValueFn = bridge.getParseValueFn();
+
             if (cells != null) {
                 for (int i = 0; i < cells.size(); i++) {
                     JsonObject cellMeta = cells.get(i).getAsJsonObject();
@@ -235,6 +255,8 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                     String vtype = cellMeta.has("type") ? cellMeta.get("type").getAsString() : "str";
                     String resName = (cellMeta.has("resource") && !cellMeta.get("resource").isJsonNull())
                         ? cellMeta.get("resource").getAsString() : null;
+                    boolean evolving = cellMeta.has("evolving") && cellMeta.get("evolving").getAsBoolean();
+                    Value evolutionFn = (evolving && i < evolutionFns.size()) ? evolutionFns.get(i) : null;
 
                     if ("linear".equals(vtype)) {
                         // Continuously-integrating cell (roadmap §7.2): value ramps by `rate`
@@ -255,6 +277,66 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                                 @Override public RealDynamics getDynamics(Querier q) {
                                     double[] s = q.getState(capturedCell);
                                     return RealDynamics.linear(s[0], s[1]);
+                                }
+                            });
+                        }
+                        continue;
+                    }
+
+                    // Cell-evolution roadmap: cells with a Python evolution function get an
+                    // EvolvingCell whose step() calls the function on every time advance.
+                    if (evolutionFn != null) {
+                        Topic<String> topic = new Topic<>();
+                        // Take the initial value as the live Python object. It must NOT be
+                        // rebuilt from cellMeta's `initial` string: that is str(value), and
+                        // _parse_value dispatches on its `reference` argument's runtime type,
+                        // so passing the string as its own reference falls through to the
+                        // str branch and stringifies the cell. A tuple-valued cell then hands
+                        // its evolution function "(0.0, 0.0)" instead of (0.0, 0.0) and fails
+                        // on the first step() with "too many values to unpack".
+                        Value pyInitial = (i < initialValues.size()) ? initialValues.get(i) : null;
+                        if (pyInitial == null || pyInitial.isNull()) {
+                            pyInitial = parseValueFn.execute(initialValue, initialValue);
+                        }
+                        // Optional re-sampling interval (cell-evolution roadmap §5.3). Absent
+                        // means the stepped value never expires, so the engine only samples
+                        // the cell when something reads it -- correct for evolution that is
+                        // linear in time, but it renders nonlinear evolution as one cliff
+                        // spanning whatever gap sat between two reads.
+                        Duration resolution = null;
+                        if (cellMeta.has("resolution_micros") && !cellMeta.get("resolution_micros").isJsonNull()) {
+                            try {
+                                resolution = Duration.of(
+                                    Long.parseLong(cellMeta.get("resolution_micros").getAsString()),
+                                    Duration.MICROSECONDS);
+                            } catch (NumberFormatException e) {
+                                System.err.println("[PyMerlin] bad resolution_micros for cell " + i
+                                    + ": " + cellMeta.get("resolution_micros"));
+                            }
+                        }
+                        CellId<Value[]> cellId = allocateEvolvingCell(
+                            builder, pyInitial, evolutionFn, parseValueFn, resolution, topic);
+                        EvolvingCell ec = new EvolvingCell(topic, cellId, evolutionFn, vtype);
+                        cellsByIndex.add(ec);
+
+                        if (resName != null) {
+                            resourceCells.put(resName, ec);
+                            final CellId<Value[]> capturedCell = cellId;
+                            final String capturedVtype = vtype;
+                            // Projection turning the raw cell value into the published
+                            // resource value (e.g. (temp, heat) -> temp). Null means the
+                            // resource is the raw value itself.
+                            final Value projection = (i < resourceProjections.size())
+                                ? resourceProjections.get(i) : null;
+                            builder.resource(resName, new Resource<String>() {
+                                @Override public String getType() { return "discrete"; }
+                                @Override public OutputType<String> getOutputType() { return typedOutputType(capturedVtype); }
+                                @Override public String getDynamics(Querier q) {
+                                    Value raw = q.getState(capturedCell)[0];
+                                    if (projection != null) {
+                                        return projection.execute(raw).asString();
+                                    }
+                                    return raw.toString();
                                 }
                             });
                         }
@@ -425,7 +507,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         String actId = "act-" + activityCounter.incrementAndGet();
 
         // Serialize args to native JSON types so both bridges receive the correct types
-        Map<String, com.google.gson.JsonElement> argsJson = new java.util.LinkedHashMap<>();
+        Map<String, JsonElement> argsJson = new LinkedHashMap<>();
         for (Map.Entry<String, SerializedValue> e : args.entrySet()) {
             argsJson.put(e.getKey(), serializedValueToJson(e.getValue()));
         }
@@ -478,6 +560,8 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
             emit(value, dc.topic());
         } else if (cell instanceof LinearCell lc) {
             emit(new LinearEffect(parseDoubleOr(value, 0.0), null), lc.topic());
+        } else if (cell instanceof EvolvingCell ec) {
+            emit(value, ec.topic());
         } else {
             System.err.println("[PyMerlin] emit for unknown resource: " + resourceName);
         }
@@ -493,6 +577,12 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
             // Value at the current instant — the engine has already stepped the cell to now.
             return Double.toString(ask(lc.cellId())[0]);
         }
+        if (cell instanceof EvolvingCell ec) {
+            // The engine has already stepped the cell to now via the evolution function.
+            // Return the Python object's string representation.
+            Value pyObj = ask(ec.cellId())[0];
+            return pyObj.toString();
+        }
         return ask(((DiscreteCell) cell).cellId())[0];
     }
 
@@ -501,6 +591,8 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         if (cell instanceof LinearCell lc) {
             // Discrete jump of the integrated value (rate unchanged).
             emit(new LinearEffect(parseDoubleOr(value, 0.0), null), lc.topic());
+        } else if (cell instanceof EvolvingCell ec) {
+            emit(value, ec.topic());
         } else {
             emit(value, ((DiscreteCell) cell).topic());
         }
@@ -566,6 +658,58 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         if (s == null) return fallback;
         try { return Double.parseDouble(s.trim()); }
         catch (NumberFormatException e) { return fallback; }
+    }
+
+    /**
+     * Allocate an evolving cell (cell-evolution roadmap). State is {@code Value[1]} holding
+     * the Python object. {@code step()} calls the Python evolution function with
+     * {@code (currentValue, elapsedMicros)} and stores the result; the wrapper in
+     * {@code _server.py} converts microseconds to a {@code pymerlin.duration.Duration}
+     * before calling the user's function.
+     */
+    private static CellId<Value[]> allocateEvolvingCell(
+            Initializer builder, Value initialValue, Value evolutionFn,
+            Value parseValueFn, Duration resolution, Topic<String> topic) {
+        return builder.allocate(
+            new Value[]{initialValue},
+            new CellType<String, Value[]>() {
+                @Override
+                public EffectTrait<String> getEffectType() {
+                    return new EffectTrait<>() {
+                        @Override public String empty()                           { return null; }
+                        @Override public String sequentially(String a, String b) { return b != null ? b : a; }
+                        @Override public String concurrently(String a, String b) { return b != null ? b : a; }
+                    };
+                }
+                @Override public void apply(Value[] state, String effect) {
+                    if (effect != null) {
+                        // The effect is a string from emitCell(); convert back to a Python
+                        // object so the evolution function receives the right type.
+                        state[0] = parseValueFn.execute(effect, state[0]);
+                    }
+                }
+                @Override public Value[] duplicate(Value[] state) { return new Value[]{state[0]}; }
+                @Override public void step(Value[] state, Duration elapsed) {
+                    long micros = elapsed.in(Duration.MICROSECONDS);
+                    state[0] = evolutionFn.execute(state[0], micros);
+                }
+                /**
+                 * How long this stepped value stays valid. Aerie samples a discrete resource
+                 * only when the cell is queried, so without an expiry a span of simulation
+                 * with no reads becomes a single profile segment holding just its endpoint --
+                 * an exponential decay renders as one cliff instead of a curve. Declaring a
+                 * resolution makes the engine re-query at that cadence.
+                 *
+                 * Empty (the default) is correct for evolution that is linear in time, where
+                 * intermediate samples add nothing to the profile.
+                 */
+                @Override public Optional<Duration> getExpiry(Value[] state) {
+                    return Optional.ofNullable(resolution);
+                }
+            },
+            s -> s,
+            topic
+        );
     }
 
     private static CellId<String[]> allocateStringCell(Initializer builder, String initial, Topic<String> topic) {

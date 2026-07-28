@@ -73,10 +73,37 @@ public interface PyBridge extends AutoCloseable {
 
     /**
      * Query the evolution functions for each cell (cell-evolution roadmap, step 2).
-     * Returns a list of GraalPy {@link org.graalvm.polyglot.Value} handles, one per cell
+     * Returns a list of GraalPy {@link Value} handles, one per cell
      * in registrar.cells order. Elements are {@code null} for cells with no evolution.
      */
     List<Value> getEvolutionFunctions() throws Exception;
+
+    /**
+     * Query each cell's initial value as a live Python object, in registrar.cells order.
+     * <p>
+     * Evolving cells are allocated from these rather than from {@code describe_cells()}'s
+     * {@code initial} string: the string is {@code str(value)}, which cannot be converted
+     * back to a tuple, {@code Duration}, or similar without already knowing the type.
+     * Taking the real object keeps the typed value intact from the first {@code step()}.
+     */
+    List<Value> getInitialValues() throws Exception;
+
+    /**
+     * Query each cell's resource projection, in registrar.cells order; {@code null} where
+     * the resource value is the cell's raw value.
+     * <p>
+     * A resource declared as {@code cell.map(fn)} publishes {@code fn(value)}: a cell
+     * holding {@code (temperature, heat_input)} exposes only the temperature. The Java
+     * resource getter sees the raw cell state, so it must project before stringifying or
+     * the profile shows the whole tuple.
+     */
+    List<Value> getResourceProjections() throws Exception;
+
+    /**
+     * Return the pre-fetched Python {@code _parse_value} function (cell-evolution roadmap).
+     * Used by {@code EvolvingCell.apply()} to convert string effects back to typed Python objects.
+     */
+    Value getParseValueFn();
 
     /**
      * Run an activity to completion on the calling thread (a Java {@code ThreadedTask}),

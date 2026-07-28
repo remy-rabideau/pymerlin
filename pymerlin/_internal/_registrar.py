@@ -1,3 +1,4 @@
+import ast
 from contextlib import contextmanager
 
 from pymerlin._internal import _globals
@@ -9,8 +10,31 @@ class Registrar:
         self.resources = []
         self.topics = []
 
-    def cell(self, initial_value, evolution=None):
+    def cell(self, initial_value, evolution=None, resolution=None):
+        """
+        Declare a cell.
+
+        ``evolution`` is ``fn(current_value, elapsed_duration) -> new_value``, called
+        automatically as simulation time advances (cell-evolution roadmap).
+
+        ``resolution`` is the maximum time the engine may let pass before re-sampling an
+        evolving cell, and it only affects how the resource PROFILE is recorded -- reads
+        are always exact, because the engine steps the cell to the read time regardless.
+
+        It matters for NONLINEAR evolution. Aerie samples a discrete resource only when
+        something queries the cell, so a stretch of simulation with no reads collapses into
+        one profile segment holding just the endpoint -- an exponential decay then renders
+        as a single cliff rather than a curve. Setting a resolution makes the cell expire
+        that often, so the engine re-queries and the profile follows the curve.
+
+        Leave it ``None`` for evolution that is linear in time (a straight line needs no
+        intermediate samples) or where only read-time values matter. Smaller values mean
+        more profile fidelity and more evolution calls; pick the coarsest value that still
+        renders acceptably.
+        """
         ref = CellRef()
+        if resolution is not None:
+            ref._resolution = resolution
         self.cells.append((ref, initial_value, evolution))
         return ref
 
@@ -36,22 +60,59 @@ class Registrar:
         """
         if not callable(f):
             cell = f
-            f = cell.get
+            # Bind through a wrapper rather than storing the bare `cell.get`, so the
+            # cell/projection metadata a derived Gettable carries (see Gettable.map)
+            # survives into self.resources. The Java path needs it to know which cell
+            # backs this resource and how to project that cell's raw value.
+            getter = _ResourceGetter(cell)
+            self.resources.append((name, getter))
+            return
         self.resources.append((name, f))
 
     def topic(self, name):
         pass
 
 
+class _ResourceGetter:
+    """Callable view of a Gettable/CellRef registered as a resource.
+
+    Exists so `registrar.resource(name, some_gettable)` keeps `_source_cell` and
+    `_projection` reachable on the stored getter; a bare bound `cell.get` would drop both,
+    and the Java path would then be unable to tell which cell backs the resource.
+    """
+
+    def __init__(self, gettable):
+        self._gettable = gettable
+        self._source_cell = getattr(gettable, "_source_cell", None)
+        self._projection = getattr(gettable, "_projection", None)
+
+    def __call__(self):
+        return self._gettable.get()
+
+
 class Gettable:
-    def __init__(self, func):
+    def __init__(self, func, source_cell=None):
         self.func = func
+        # The CellRef this value is ultimately derived from, if any. Carried so a DERIVED
+        # resource (e.g. cell.map(lambda t: t[0])) can still be tied back to the cell that
+        # backs it -- the Java path registers resources per-cell, so a resource with no
+        # identifiable source cell is silently never created.
+        self._source_cell = source_cell
+        # Raw cell value -> this resource's value, when derived via map(); None means the
+        # value is used as-is.
+        self._projection = None
 
     def get(self):
         return self.func()
 
     def map(self, new_func):
-        return Gettable(lambda: new_func(self.get()))
+        derived = Gettable(lambda: new_func(self.get()), source_cell=self._source_cell)
+        # Keep the projection itself (raw cell value -> resource value) reachable. The Java
+        # resource getter holds the RAW cell state, so it needs to apply this before
+        # stringifying; composing through an existing projection keeps chained maps correct.
+        prior = self._projection
+        derived._projection = (lambda v: new_func(prior(v))) if prior else new_func
+        return derived
 
     def __add__(self, other):
         if _is_gettable(other):
@@ -108,10 +169,14 @@ class CellRef(Gettable):
 
     def __init__(self):
         super().__init__(self._get)
+        # A cell is its own source, so anything derived from it via map() keeps a path
+        # back to the cell the Java side must register the resource against.
+        self._source_cell = self
         self.id = None
         self.topic = None
         self._cell_index = None    # sequential int, set by _ModelState (Phase 4)
         self._value_type = str     # type of the cell value, set by _ModelState
+        self._resolution = None    # max re-sample interval for evolving cells (Duration)
 
     def emit(self, event):
         if not callable(event):
@@ -144,6 +209,8 @@ class CellRef(Gettable):
             return int(float(val_str))
         elif self._value_type is bool:
             return val_str.lower() in ("true", "1")
+        elif self._value_type in (tuple, list):
+            return ast.literal_eval(str(val_str))
         return val_str
 
     def __iadd__(self, other):

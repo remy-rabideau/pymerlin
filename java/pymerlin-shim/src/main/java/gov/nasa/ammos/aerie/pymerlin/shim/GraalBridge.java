@@ -41,6 +41,7 @@ public final class GraalBridge implements PyBridge {
     private final Value   modelClass;
     private final Value   describeActivityTypes;
     private final Value   describeConfig;
+    private final Value   parseValueFn;
 
     /**
      * The extracted model-source directory this bridge is responsible for deleting on
@@ -81,7 +82,7 @@ public final class GraalBridge implements PyBridge {
         }
 
         ctx.eval("python", "from pymerlin._internal._server import "
-            + "_load_model_class, _describe_activity_types, _describe_config, _ModelState, run_activity_direct");
+            + "_load_model_class, _describe_activity_types, _describe_config, _ModelState, run_activity_direct, _parse_value");
 
         Value loadModelClass = ctx.eval("python", "_load_model_class");
         modelClass = loadModelClass.execute(modelRef);
@@ -89,6 +90,7 @@ public final class GraalBridge implements PyBridge {
         describeActivityTypes = ctx.eval("python", "_describe_activity_types");
         describeConfig        = ctx.eval("python", "_describe_config");
         runActivityDirectFn   = ctx.eval("python", "run_activity_direct");
+        parseValueFn          = ctx.eval("python", "_parse_value");
 
         // Ensure the GraalPy Context and any extracted source dir are released even if
         // close() is never called on this bridge (the persistent instantiate() bridge has
@@ -165,6 +167,11 @@ public final class GraalBridge implements PyBridge {
     }
 
     @Override
+    public Value getParseValueFn() {
+        return parseValueFn;
+    }
+
+    @Override
     public List<Value> getEvolutionFunctions() throws Exception {
         Value getEvFns = modelState().getMember("get_evolution_functions");
         Value result = getEvFns.execute();
@@ -176,6 +183,33 @@ public final class GraalBridge implements PyBridge {
             }
         }
         return fns;
+    }
+
+    @Override
+    public List<Value> getResourceProjections() throws Exception {
+        Value getProjections = modelState().getMember("get_resource_projections");
+        Value result = getProjections.execute();
+        List<Value> projections = new ArrayList<>();
+        if (result != null && !result.isNull() && result.hasArrayElements()) {
+            for (long i = 0; i < result.getArraySize(); i++) {
+                Value v = result.getArrayElement(i);
+                projections.add((v == null || v.isNull()) ? null : v);
+            }
+        }
+        return projections;
+    }
+
+    @Override
+    public List<Value> getInitialValues() throws Exception {
+        Value getInitials = modelState().getMember("get_initial_values");
+        Value result = getInitials.execute();
+        List<Value> values = new ArrayList<>();
+        if (result != null && !result.isNull() && result.hasArrayElements()) {
+            for (long i = 0; i < result.getArraySize(); i++) {
+                values.add(result.getArrayElement(i));
+            }
+        }
+        return values;
     }
 
     // ------------------------------------------------------------------
