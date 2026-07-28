@@ -1,11 +1,17 @@
 package gov.nasa.ammos.aerie.pymerlin.shim;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import gov.nasa.jpl.aerie.merlin.protocol.driver.CellId;
 import gov.nasa.jpl.aerie.merlin.protocol.driver.Initializer;
+import gov.nasa.jpl.aerie.merlin.protocol.driver.Querier;
 import gov.nasa.jpl.aerie.merlin.protocol.driver.Topic;
+import gov.nasa.jpl.aerie.merlin.protocol.model.CellType;
 import gov.nasa.jpl.aerie.merlin.protocol.model.DirectiveType;
+import gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait;
 import gov.nasa.jpl.aerie.merlin.protocol.model.InputType;
 import gov.nasa.jpl.aerie.merlin.protocol.model.ModelType;
 import gov.nasa.jpl.aerie.merlin.protocol.model.OutputType;
@@ -16,22 +22,32 @@ import gov.nasa.jpl.aerie.merlin.protocol.types.RealDynamics;
 import gov.nasa.jpl.aerie.merlin.protocol.types.SerializedValue;
 import gov.nasa.jpl.aerie.merlin.protocol.types.Unit;
 import gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema;
+import org.graalvm.polyglot.Value;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
+import java.net.JarURLConnection;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
 import static gov.nasa.jpl.aerie.merlin.framework.ModelActions.ask;
@@ -134,7 +150,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         String modelRef = resolveModelRef();
         try (PyBridge oneShot = PyBridge.create(modelRef)) {
             JsonObject types = oneShot.getActivityTypes();
-            Set<String> names = new java.util.LinkedHashSet<>();
+            Set<String> names = new LinkedHashSet<>();
             if (types != null) {
                 for (String name : types.keySet()) {
                     names.add(name);
@@ -189,7 +205,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         // Populate activityNames from the live bridge (avoids a second startup).
         try {
             JsonObject types = bridge.getActivityTypes();
-            Set<String> names = new java.util.LinkedHashSet<>();
+            Set<String> names = new LinkedHashSet<>();
             if (types != null) {
                 for (String name : types.keySet()) {
                     names.add(name);
@@ -211,7 +227,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         // Cell indices match the Python registrar.cells order so CellRef._cell_index
         // on the Python side maps directly to cellsByIndex on the Java side.
         try {
-            com.google.gson.JsonArray cells = bridge.getCells();
+            JsonArray cells = bridge.getCells();
             if (cells != null) {
                 for (int i = 0; i < cells.size(); i++) {
                     JsonObject cellMeta = cells.get(i).getAsJsonObject();
@@ -236,7 +252,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                             builder.resource(resName, new Resource<RealDynamics>() {
                                 @Override public String getType() { return "real"; }
                                 @Override public OutputType<RealDynamics> getOutputType() { return realOutputType(); }
-                                @Override public RealDynamics getDynamics(gov.nasa.jpl.aerie.merlin.protocol.driver.Querier q) {
+                                @Override public RealDynamics getDynamics(Querier q) {
                                     double[] s = q.getState(capturedCell);
                                     return RealDynamics.linear(s[0], s[1]);
                                 }
@@ -258,7 +274,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                         builder.resource(capturedName, new Resource<String>() {
                             @Override public String getType() { return "discrete"; }
                             @Override public OutputType<String> getOutputType() { return typedOutputType(capturedVtype); }
-                            @Override public String getDynamics(gov.nasa.jpl.aerie.merlin.protocol.driver.Querier q) {
+                            @Override public String getDynamics(Querier q) {
                                 return q.getState(capturedCell)[0];
                             }
                         });
@@ -326,7 +342,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
             return ref;
         }
 
-        String simId = java.util.UUID.randomUUID().toString().substring(0, 8);
+        String simId = UUID.randomUUID().toString().substring(0, 8);
         Path tmpDir = Files.createTempDirectory("pymerlin-model-" + simId + "-");
 
         // Determine if this is a package (resourcePath has >2 segments, i.e. pymerlin_models/<pkg>/<file>)
@@ -342,18 +358,18 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
 
             // Walk the JAR entries via the jar: URL protocol.
             URL jarUrl = ShimModelType.class.getProtectionDomain().getCodeSource().getLocation();
-            java.net.JarURLConnection conn = (java.net.JarURLConnection) new URL("jar:" + jarUrl.toExternalForm() + "!/").openConnection();
-            try (java.util.jar.JarFile jar = conn.getJarFile()) {
-                java.util.Enumeration<java.util.jar.JarEntry> entries = jar.entries();
+            JarURLConnection conn = (JarURLConnection) new URL("jar:" + jarUrl.toExternalForm() + "!/").openConnection();
+            try (JarFile jar = conn.getJarFile()) {
+                Enumeration<JarEntry> entries = jar.entries();
                 while (entries.hasMoreElements()) {
-                    java.util.jar.JarEntry entry = entries.nextElement();
+                    JarEntry entry = entries.nextElement();
                     String name = entry.getName();
                     if (!name.startsWith(pkgPrefix) || entry.isDirectory()) continue;
                     String relative = name.substring(pkgPrefix.length()); // e.g. "model.py" or "sub/foo.py"
                     Path dest = pkgDest.resolve(relative);
                     Files.createDirectories(dest.getParent());
                     try (InputStream is = jar.getInputStream(entry)) {
-                        Files.copy(is, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        Files.copy(is, dest, StandardCopyOption.REPLACE_EXISTING);
                     }
                 }
             }
@@ -518,10 +534,10 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
     private static CellId<double[]> allocateLinearCell(Initializer builder, double initial, double rate, Topic<LinearEffect> topic) {
         return builder.allocate(
             new double[]{initial, rate},
-            new gov.nasa.jpl.aerie.merlin.protocol.model.CellType<LinearEffect, double[]>() {
+            new CellType<LinearEffect, double[]>() {
                 @Override
-                public gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<LinearEffect> getEffectType() {
-                    return new gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<>() {
+                public EffectTrait<LinearEffect> getEffectType() {
+                    return new EffectTrait<>() {
                         @Override public LinearEffect empty() { return new LinearEffect(null, null); }
                         @Override public LinearEffect sequentially(LinearEffect a, LinearEffect b) { return combine(a, b); }
                         @Override public LinearEffect concurrently(LinearEffect a, LinearEffect b) { return combine(a, b); }
@@ -555,10 +571,10 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
     private static CellId<String[]> allocateStringCell(Initializer builder, String initial, Topic<String> topic) {
         return builder.allocate(
             new String[]{initial},
-            new gov.nasa.jpl.aerie.merlin.protocol.model.CellType<String, String[]>() {
+            new CellType<String, String[]>() {
                 @Override
-                public gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<String> getEffectType() {
-                    return new gov.nasa.jpl.aerie.merlin.protocol.model.EffectTrait<>() {
+                public EffectTrait<String> getEffectType() {
+                    return new EffectTrait<>() {
                         @Override public String empty()                             { return null; }
                         @Override public String sequentially(String a, String b)   { return b != null ? b : a; }
                         @Override public String concurrently(String a, String b)   { return b != null ? b : a; }
@@ -581,7 +597,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         return sv.match(new SerializedValue.Visitor<>() {
             @Override public String onNull()              { return "null"; }
             @Override public String onBoolean(boolean v)  { return Boolean.toString(v); }
-            @Override public String onNumeric(java.math.BigDecimal v) { return v.toPlainString(); }
+            @Override public String onNumeric(BigDecimal v) { return v.toPlainString(); }
             @Override public String onString(String v)    { return v; }
             @Override public String onMap(Map<String, SerializedValue> m) { return m.toString(); }
             @Override public String onList(List<SerializedValue> l)       { return l.toString(); }
@@ -605,19 +621,19 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         return val; // STRING and others pass through unchanged
     }
 
-    private static com.google.gson.JsonElement serializedValueToJson(SerializedValue sv) {
-        return sv.match(new SerializedValue.Visitor<com.google.gson.JsonElement>() {
-            @Override public com.google.gson.JsonElement onNull()             { return com.google.gson.JsonNull.INSTANCE; }
-            @Override public com.google.gson.JsonElement onBoolean(boolean v) { return new com.google.gson.JsonPrimitive(v); }
-            @Override public com.google.gson.JsonElement onNumeric(java.math.BigDecimal v) { return new com.google.gson.JsonPrimitive(v); }
-            @Override public com.google.gson.JsonElement onString(String v)   { return new com.google.gson.JsonPrimitive(v); }
-            @Override public com.google.gson.JsonElement onMap(Map<String, SerializedValue> m) {
-                com.google.gson.JsonObject obj = new com.google.gson.JsonObject();
+    private static JsonElement serializedValueToJson(SerializedValue sv) {
+        return sv.match(new SerializedValue.Visitor<JsonElement>() {
+            @Override public JsonElement onNull()             { return JsonNull.INSTANCE; }
+            @Override public JsonElement onBoolean(boolean v) { return new JsonPrimitive(v); }
+            @Override public JsonElement onNumeric(BigDecimal v) { return new JsonPrimitive(v); }
+            @Override public JsonElement onString(String v)   { return new JsonPrimitive(v); }
+            @Override public JsonElement onMap(Map<String, SerializedValue> m) {
+                JsonObject obj = new JsonObject();
                 for (var entry : m.entrySet()) obj.add(entry.getKey(), serializedValueToJson(entry.getValue()));
                 return obj;
             }
-            @Override public com.google.gson.JsonElement onList(List<SerializedValue> l) {
-                com.google.gson.JsonArray arr = new com.google.gson.JsonArray();
+            @Override public JsonElement onList(List<SerializedValue> l) {
+                JsonArray arr = new JsonArray();
                 for (var item : l) arr.add(serializedValueToJson(item));
                 return arr;
             }

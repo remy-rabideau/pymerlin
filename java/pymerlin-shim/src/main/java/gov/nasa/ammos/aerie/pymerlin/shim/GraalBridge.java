@@ -8,9 +8,11 @@ import com.google.gson.JsonPrimitive;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Value;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -347,14 +349,14 @@ public final class GraalBridge implements PyBridge {
     private static void deleteRecursively(Path dir) {
         if (dir == null || !Files.exists(dir)) return;
         try (var paths = Files.walk(dir)) {
-            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+            paths.sorted(Comparator.reverseOrder()).forEach(p -> {
                 try {
                     Files.deleteIfExists(p);
-                } catch (java.io.IOException e) {
+                } catch (IOException e) {
                     System.err.println("[PyMerlin][GraalBridge] could not delete " + p + ": " + e.getMessage());
                 }
             });
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             System.err.println("[PyMerlin][GraalBridge] could not clean up " + dir + ": " + e.getMessage());
         }
     }
