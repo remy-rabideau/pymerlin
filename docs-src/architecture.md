@@ -45,8 +45,9 @@ PlanDev loads a packaged model:
 
 Because the whole thing is one JVM, a model error surfaces Java-side as a `PolyglotException`
 carrying the Python stack, cells are real PlanDev cells (so `wait_until` registers genuine read
-dependencies rather than polling), and `call()` blocks the parent task until the child
-completes — none of which the subprocess protocol could do cleanly.
+dependencies rather than polling), `call()` blocks the parent task until the child completes,
+and cell evolution functions (`registrar.cell(initial, evolution=fn)`) are called automatically
+by the engine as time advances — none of which the subprocess protocol could do cleanly.
 
 ## Approachability over performance
 

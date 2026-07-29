@@ -26,8 +26,8 @@ pages can go into great detail.
 
 ### Assumed programming knowledge
 As a python library, user-facing documentation should be targeted towards people who may know a little python, but maybe
-not a lot of it. There's no need to explain basic concepts like functions or variables, but keywords like `async` and 
-`await` deserve a brief comment and a link to python documentation.
+not a lot of it. There's no need to explain basic concepts like functions or variables, but less common features like
+decorators or context managers deserve a brief comment and a link to python documentation.
 
 Little to know Java knowledge should be expected.
 

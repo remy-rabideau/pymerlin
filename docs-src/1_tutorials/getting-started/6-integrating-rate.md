@@ -30,7 +30,7 @@ self.ssr_volume_simple = registrar.cell(0.0)
 registrar.resource("ssr_volume_simple", self.ssr_volume_simple.get)
 ```
 
-Taking a look at our `collect_data` activity, we can add the following line of code after the `await delay()` within its
+Taking a look at our `collect_data` activity, we can add the following line of code after the `delay()` within its
 body to compute the data volume resulting from the activity collecting data at a constant duration over the full
 duration of the activity.
 
@@ -52,7 +52,7 @@ out the data volume accumulation over many steps. That would look something like
 num_steps = 20
 step_size = duration / num_steps
 for i in range(num_steps):
-    await delay(step_size)
+    delay(step_size)
 model.data_model.ssr_volume_simple += this.rate * step_size.to_number_in(SECONDS) / 1000.0
 
 ```

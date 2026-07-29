@@ -177,7 +177,7 @@ where [activity types](https://nasa-ammos.github.io/aerie-docs/mission-modeling/
 as a class in Java - describe the structure, properties, and behavior of an object and activity instances are the actual
 objects that exist within a plan.
 
-Since activity types are implemented by async functions in python, create a new function called `collect_data` and add the
+Activity types are implemented as regular functions in python. Create a new function called `collect_data` and add the
 following decorator above that function, which allows pymerlin to recognize this function as an activity type.
 
 ```python
@@ -187,8 +187,9 @@ def collect_data(model):
 ```
 
 :::{note}
-The `async` keyword allows pymerlin to interleave the execution of your new activity with other activities, which is
-important when activities can pause and resume at various times
+pymerlin interleaves the execution of your activities using threads, so each activity is a
+regular (synchronous) function. When an activity calls `delay()`, `wait_until()`, or
+`call()`, the framework pauses it and lets other activities run.
 :::
 
 Let's define

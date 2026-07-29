@@ -41,6 +41,7 @@ At load time, `GraalBridge` builds a GraalPy `Context`, puts the model's source 
 | `getResources()` | `_ModelState.describe_resources()` | after `instantiate()` |
 | `getResourceValue(name)` | `_ModelState.get_resource_value(name)` | resource extraction |
 | `getCells()` | `_ModelState.describe_cells()` | after `instantiate()` (Phase 4) |
+| `getEvolutionFunctions()` | `_ModelState.get_evolution_functions()` | after `getCells()` — returns per-cell evolution callables (0.1.1) |
 | `runActivityDirect(...)` | `run_activity_direct(model_state, actions, name, args)` | per activity |
 
 Registration queries (`getActivityTypes`/`getConfigParameters`) only touch the model *class*,

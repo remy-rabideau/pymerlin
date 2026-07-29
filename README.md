@@ -6,14 +6,6 @@ pymerlin is a Python mission modeling framework for the [PlanDev](https://github
 To learn more about PlanDev, read the [PlanDev Docs](https://nasa-ammos.github.io/aerie-docs).
 <!-- end elevator-pitch -->
 
-> **Branch note:** This fork is on `feature/shim-graalpy`. The architecture has changed
-> significantly from `main`: py4j is gone, and so is the intermediate stdin/stdout JSON
-> subprocess shim that briefly replaced it. A packaged model now runs **in-process** inside
-> the PlanDev worker's JVM via an embedded [GraalPy](https://www.graalvm.org/python/)
-> interpreter — Java and Python call each other directly, with no subprocess and no
-> serialization protocol between them. See [Architecture](#architecture) below and
-> [`roadmap.md`](../roadmap.md).
-
 ## Prerequisites
 
 - Python >= 3.10 — to author models and run `pymerlin package`.
@@ -150,6 +142,12 @@ If any changes are made to the Java shim code, rebuild and place the JAR where t
 package expects it:
 
 ```shell
+./scripts/build-shim.sh
+```
+
+Or manually:
+
+```shell
 cd java
 ./gradlew assemble
 cp pymerlin-shim/build/libs/pymerlin-shim.jar ../pymerlin/_internal/jars/
@@ -167,10 +165,12 @@ still bundled.
 
 ## Known limitations and open work
 
-Phases 1–4 of the GraalPy migration closed most of the functional gaps the earlier
-subprocess architecture had: `call()`, `wait_until` with real conditions, linear
-(interpolated) resources, cell evolution, model configuration, and temp-directory cleanup
-all work now (see `roadmap.md`). What remains:
+Phases 1–4 of the GraalPy migration plus the 0.1.1 cell-evolution work closed most of the
+functional gaps the earlier subprocess architecture had: `call()`, `wait_until` with real
+conditions, linear (interpolated) resources, general cell evolution (user-defined
+`evolution` functions, including clamped linear cells), model configuration, the
+`MissionModelBase` helper for improved type checking, and temp-directory cleanup all work
+now (see `roadmap.md` and `cell_evolution_roadmap.md`). What remains:
 
 ### Functional gaps
 
@@ -204,5 +204,5 @@ The in-process JUnit suite (`DemoModelSimulationTest`, `SpanTimingTest`,
 `CallSemanticsTest`) runs against a real GraalPy runtime + provisioned `python-resources`
 venv — i.e. the built worker image, via the `dockerTestBundle` task (see
 `java/pymerlin-shim/build.gradle`). On a stock JDK without that environment the tests
-`assumeTrue`-skip rather than false-fail. Phase 6 (`roadmap.md` §9) scopes the remaining
-coverage: spawn, `call()`, `wait_until`, resource reporting, and a span-timing assertion.
+`assumeTrue`-skip rather than false-fail. Python-side cell-evolution tests live in
+`tests/test_cell_evolution.py` and run under plain pytest.

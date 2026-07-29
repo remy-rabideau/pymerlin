@@ -22,8 +22,9 @@ JDK or Gradle. Rebuild and reinstall it after any change under `java/pymerlin-sh
 ./scripts/build-shim.sh
 ```
 
-Commit the rebuilt JAR alongside the Java change. Python-only changes don't affect the
-shim and need no rebuild.
+This runs `./gradlew assemble` in `java/` and copies the resulting JAR to
+`pymerlin/_internal/jars/`. Commit the rebuilt JAR alongside the Java change. Python-only
+changes don't affect the shim and need no rebuild.
 
 `pymerlin package` copies whatever JAR is at that path, so forgetting to rebuild after a
 Java change means packaged models ship stale shim classes.
@@ -33,6 +34,11 @@ Java change means packaged models ship stale shim classes.
 All tests are located in the `tests` directory, and are defined using pytest.
 
 As of writing, tests can only be run in your current environment - so first run `pip install .`, and then `pytest`.
+
+Key test files:
+- `tests/test_simulation.py` — core simulation tests (delays, emits, spawn, call, wait_until).
+- `tests/test_cell_evolution.py` — cell evolution tests (evolving cells, clamped linear
+  bounds, evolution projections). Added in 0.1.1.
 
 Future aspiration: use `tox` to test on multiple versions of python.
 
