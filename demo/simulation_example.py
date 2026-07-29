@@ -4,12 +4,12 @@ Simulation example demonstrating pymerlin basics with plotting.
 This is the Python script version of simulation_example.ipynb with updated API.
 """
 
-from pymerlin import MissionModel, simulate, Schedule, Directive
+from pymerlin import MissionModel, MissionModelBase, simulate, Schedule, Directive
 from pymerlin.model_actions import delay, wait_until
 
 
 @MissionModel
-class Mission:
+class Mission(MissionModelBase):
     def __init__(self, registrar):
         self.cell1 = registrar.cell("init")
 

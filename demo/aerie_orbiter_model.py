@@ -9,7 +9,7 @@ import math
 from dataclasses import dataclass, field
 from enum import Enum
 
-from pymerlin import MissionModel
+from pymerlin import MissionModel, MissionModelBase
 from pymerlin.model_actions import delay, spawn
 from pymerlin.duration import Duration, SECONDS
 
@@ -701,7 +701,7 @@ class Configuration:
 # =============================================================================
 
 @MissionModel
-class Mission:
+class Mission(MissionModelBase):
     CONFIG: Configuration = Configuration.default()
     EPOCH_UTC: str  = "2026-04-05T12:00:00Z"
     SPACECRAFT: str = "MRO"

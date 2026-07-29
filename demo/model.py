@@ -1,6 +1,6 @@
 import math
 
-from pymerlin import MissionModel
+from pymerlin import MissionModel, MissionModelBase
 from pymerlin.clock import clock
 from pymerlin.duration import SECONDS, Duration
 from pymerlin.model_actions import delay, wait_until, spawn
@@ -137,7 +137,7 @@ def _recompute_power_effects(mission):
 
 
 @MissionModel
-class Mission:
+class Mission(MissionModelBase):
     def __init__(self, registrar, initial_battery_pct: float = 100.0, high_gain: bool = True):
         # Configuration (roadmap §7): constructor parameters after `registrar` become the
         # model's simulation-configuration schema, set per-plan in the Aerie UI. Downlink

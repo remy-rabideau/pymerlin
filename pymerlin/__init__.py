@@ -2,7 +2,7 @@
 This is the pymerlin module, doing pymerlin things
 """
 
-from ._internal._decorators import MissionModel
+from ._internal._decorators import MissionModel, MissionModelBase
 from ._internal._framework import simulate, Span, ProfileSegment
 from ._internal._registrar import Registrar
 from ._internal._schedule import Schedule, Directive
@@ -44,6 +44,7 @@ def checkout():
 
 __all__ = [
     MissionModel,
+    MissionModelBase,
     simulate,
     Span,
     ProfileSegment,

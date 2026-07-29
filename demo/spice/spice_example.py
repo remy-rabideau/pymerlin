@@ -18,7 +18,7 @@ You'll also need SPICE kernel files. For this example, you need:
 Download kernels from: https://naif.jpl.nasa.gov/naif/data.html
 """
 
-from pymerlin import MissionModel, simulate, Schedule, Directive
+from pymerlin import MissionModel, MissionModelBase, simulate, Schedule, Directive
 from pymerlin.spice import SpiceKernel, duration_to_et, SPICE_AVAILABLE
 from pymerlin.model_actions import delay, spawn
 from pymerlin.clock import clock
@@ -32,7 +32,7 @@ if not SPICE_AVAILABLE:
 
 
 @MissionModel
-class SpacecraftMission:
+class SpacecraftMission(MissionModelBase):
     """
     Example mission model that uses SPICE for geometric calculations.
     

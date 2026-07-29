@@ -20,7 +20,7 @@ Download kernels from:
     - Mars ephemeris: https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/satellites/
 """
 
-from pymerlin import MissionModel, simulate, Schedule, Directive
+from pymerlin import MissionModel, MissionModelBase, simulate, Schedule, Directive
 from pymerlin.spice import SpiceKernel, duration_to_et, spice_resource, SPICE_AVAILABLE
 from pymerlin.clock import clock
 
@@ -51,7 +51,7 @@ EFFICIENCY = 0.30
 
 
 @MissionModel
-class MROmission:
+class MROmission(MissionModelBase):
     """
     Mars Reconnaissance Orbiter mission model using SPICE.
     

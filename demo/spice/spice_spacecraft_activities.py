@@ -17,7 +17,7 @@ Requirements:
     - SPICE kernels (same as spice_mro_example.py)
 """
 
-from pymerlin import MissionModel, simulate, Schedule, Directive
+from pymerlin import MissionModel, MissionModelBase, simulate, Schedule, Directive
 from pymerlin.spice import SpiceKernel, spice_resource, duration_to_et
 from pymerlin.clock import clock
 from pymerlin.model_actions import delay
@@ -26,7 +26,7 @@ from pymerlin.duration import Duration
 
 
 @MissionModel
-class MarsOrbiter:
+class MarsOrbiter(MissionModelBase):
     """
     A Mars orbiter mission model with realistic spacecraft operations.
     

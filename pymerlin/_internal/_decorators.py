@@ -4,6 +4,7 @@ Provide the MissionModel decorator, which generates the .ActivityType decorators
 
 import inspect
 import warnings
+from typing import Any, Callable, ClassVar, Union
 
 from pymerlin._internal._task_specification import TaskInstance
 
@@ -58,3 +59,33 @@ class TaskDefinition:
         instance.args = args
         instance.kwargs = kwargs
         return instance
+
+
+class MissionModelBase:
+    """
+    Optional base class for @MissionModel classes, purely for the benefit of type
+    checkers and IDEs.
+
+    @MissionModel attaches ``activity_types`` and ``ActivityType`` to the class at
+    runtime, inside a function body. Type checkers don't execute function bodies, so
+    they never see those assignments and report ``@Mission.ActivityType`` as an access
+    to an unknown attribute. Declaring the two members here, and inheriting from this
+    class, tells the checker what the decorator is about to add.
+
+    Inheriting is optional and changes nothing at runtime: @MissionModel overwrites
+    both members on the decorated class either way. Models that don't subclass this
+    still work exactly as before.
+
+        @MissionModel
+        class Mission(MissionModelBase):
+            ...
+    """
+
+    activity_types: ClassVar[dict]
+
+    @staticmethod
+    def ActivityType(func: Union[Callable[..., Any], "TaskDefinition"]) -> "TaskDefinition":
+        """Replaced by @MissionModel with a closure bound to the decorated class."""
+        raise NotImplementedError(
+            "ActivityType is installed by @MissionModel; decorate the class with it"
+        )

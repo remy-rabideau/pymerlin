@@ -18,7 +18,7 @@ activity, matching pymerlin's discrete pure-Python engine and the Java model's
 own stepping ``BodyGeometryGenerator``.
 """
 
-from pymerlin import MissionModel
+from pymerlin import MissionModel, MissionModelBase
 from pymerlin.model_actions import delay, spawn
 from pymerlin.duration import Duration, SECONDS
 
@@ -41,7 +41,7 @@ from .radar.radar_model import RadarModel, RadarDataCollectionMode
 
 
 @MissionModel
-class Mission:
+class Mission(MissionModelBase):
     # --- Per-plan configuration (override before simulate; see main.py) --------
     CONFIG: Configuration = Configuration.default()
     EPOCH_UTC: str = "2026-04-05T12:00:00Z"     # SPICE epoch / plan start
