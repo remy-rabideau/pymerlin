@@ -15,17 +15,18 @@ Additional libraries:
 The shim JAR (`pymerlin-shim.jar`) is what `pymerlin package` copies into an uploadable
 mission-model JAR; it implements PlanDev's `MerlinPlugin` SPI and runs the model in-process via
 GraalPy (see [architecture](./architecture.md) and [shim-protocol](./shim-protocol.md)).
-Rebuild it after any change to the Java shim code and copy it where the Python package
-expects it:
+The built JAR is committed to `pymerlin/_internal/jars/`, so installing pymerlin needs no
+JDK or Gradle. Rebuild and reinstall it after any change under `java/pymerlin-shim/src`:
 
 ```shell
-cd java
-./gradlew assemble
-cp pymerlin-shim/build/libs/pymerlin-shim.jar ../pymerlin/_internal/jars/
+./scripts/build-shim.sh
 ```
 
-`pymerlin package` copies whatever JAR is at that path, so re-copying after a rebuild is
-required or a packaged model ships stale shim classes.
+Commit the rebuilt JAR alongside the Java change. Python-only changes don't affect the
+shim and need no rebuild.
+
+`pymerlin package` copies whatever JAR is at that path, so forgetting to rebuild after a
+Java change means packaged models ship stale shim classes.
 
 ## Testing
 
