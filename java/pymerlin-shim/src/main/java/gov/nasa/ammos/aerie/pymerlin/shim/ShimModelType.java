@@ -74,7 +74,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
     // --- per-resource cell bookkeeping ---
     // A cell is discrete (snapshots the last emit'd value, String-backed), linear
     // (continuously integrates value + rate·t, backed by RealDynamics — roadmap §7.2),
-    // or evolving (autonomously stepped by a Python evolution function — cell-evolution roadmap).
+    // or evolving (autonomously stepped by a Python evolution function).
     private sealed interface Cell permits DiscreteCell, LinearCell, EvolvingCell {}
 
     private record DiscreteCell(
@@ -97,8 +97,8 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
     private record LinearEffect(Double newValue, Double newRate) {}
 
     /**
-     * A cell whose value evolves autonomously via a Python evolution function
-     * (cell-evolution roadmap). State is held as a GraalPy {@link Value} (the raw
+     * A cell whose value evolves autonomously via a Python evolution function.
+     * State is held as a GraalPy {@link Value} (the raw
      * Python object), so {@code step()} can call the evolution function without
      * per-step serialization. Effects are Python objects too, so a value whose type has
      * no faithful string form (a {@code Duration}, say) survives a write unchanged.
@@ -329,7 +329,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                         if (pyInitial == null || pyInitial.isNull()) {
                             pyInitial = parseValueFn.execute(initialValue, initialValue);
                         }
-                        // Optional re-sampling interval (cell-evolution roadmap §5.3). Absent
+                        // Optional re-sampling interval, driving CellType.getExpiry. Absent
                         // means the stepped value never expires, so the engine only samples
                         // the cell when something reads it -- correct for evolution that is
                         // linear in time, but it renders nonlinear evolution as one cliff
@@ -783,7 +783,7 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
     }
 
     /**
-     * Allocate an evolving cell (cell-evolution roadmap). State is {@code Value[1]} holding
+     * Allocate an evolving cell. State is {@code Value[1]} holding
      * the Python object. {@code step()} calls the Python evolution function with
      * {@code (currentValue, elapsedMicros)} and stores the result; the wrapper in
      * {@code _server.py} converts microseconds to a {@code pymerlin.duration.Duration}

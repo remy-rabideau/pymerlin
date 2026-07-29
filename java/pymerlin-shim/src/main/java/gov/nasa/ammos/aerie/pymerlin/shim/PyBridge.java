@@ -72,7 +72,7 @@ public interface PyBridge extends AutoCloseable {
     JsonArray getCells() throws Exception;
 
     /**
-     * Query the evolution functions for each cell (cell-evolution roadmap, step 2).
+     * Query the evolution functions for each cell.
      * Returns a list of GraalPy {@link Value} handles, one per cell
      * in registrar.cells order. Elements are {@code null} for cells with no evolution.
      */
@@ -100,7 +100,7 @@ public interface PyBridge extends AutoCloseable {
     List<Value> getResourceProjections() throws Exception;
 
     /**
-     * Return the pre-fetched Python {@code _parse_value} function (cell-evolution roadmap).
+     * Return the pre-fetched Python {@code _parse_value} function.
      * Used by {@code EvolvingCell.apply()} to convert string effects back to typed Python objects.
      */
     Value getParseValueFn();

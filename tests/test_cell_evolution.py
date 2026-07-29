@@ -1,5 +1,5 @@
 """
-Tests for cell evolution (cell-evolution roadmap, step 8).
+Tests for cell evolution.
 
 These tests run against the standalone Python simulation framework (_framework.py).
 Java-side tests require a running Aerie worker and are out of scope here.

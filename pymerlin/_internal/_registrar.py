@@ -15,7 +15,7 @@ class Registrar:
         Declare a cell.
 
         ``evolution`` is ``fn(current_value, elapsed_duration) -> new_value``, called
-        automatically as simulation time advances (cell-evolution roadmap).
+        automatically as simulation time advances.
 
         ``resolution`` is the maximum time the engine may let pass before re-sampling an
         evolving cell, and it only affects how the resource PROFILE is recorded -- reads

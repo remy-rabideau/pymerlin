@@ -335,7 +335,7 @@ class _ModelState:
             if _evolution is not None:
                 desc["evolving"] = True
                 # Max interval before the engine re-samples this cell, in microseconds
-                # (cell-evolution roadmap §5.3 -- CellType.getExpiry). Absent means "never
+                # (drives Java's CellType.getExpiry). Absent means "never
                 # expires", which is right for linear-in-time evolution but renders
                 # nonlinear evolution as a single cliff between activity boundaries.
                 resolution = getattr(cell_ref, "_resolution", None)
@@ -410,7 +410,7 @@ class _ModelState:
 
 
 # ---------------------------------------------------------------------------
-# Cell evolution helpers (cell-evolution roadmap)
+# Cell evolution helpers
 # ---------------------------------------------------------------------------
 
 def _wrap_projection(fn):
