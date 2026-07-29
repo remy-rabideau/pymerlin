@@ -1,7 +1,7 @@
 import pytest
 from py4j.java_gateway import Py4JJavaError
 
-from pymerlin import MissionModel
+from pymerlin import MissionModel, checkout
 from pymerlin import Schedule
 from pymerlin import simulate, Span
 from pymerlin._internal._decorators import Validation, ValidationResult, Task
@@ -56,7 +56,6 @@ def clear_list(mission, item):
 
 
 def test_checkout():
-    from pymerlin import checkout
     checkout()
 
 

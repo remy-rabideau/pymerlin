@@ -5,8 +5,11 @@ These tests run against the standalone Python simulation framework (_framework.p
 Java-side tests require a running Aerie worker and are out of scope here.
 """
 
+import math as _math
+
 from pymerlin import MissionModel
 from pymerlin import simulate
+from pymerlin._internal import _globals
 from pymerlin._internal._registrar import Registrar
 from pymerlin._internal._schedule import Directive, Schedule
 from pymerlin._internal._server import _ModelState, _parse_value
@@ -450,14 +453,12 @@ class _FakeJavaActions:
 
 
 def _with_fake_java(values):
-    from pymerlin._internal import _globals
     fake = _FakeJavaActions(values)
     _globals.java_actions = fake
     return fake
 
 
 def _clear_fake_java():
-    from pymerlin._internal import _globals
     _globals.java_actions = None
 
 
@@ -467,8 +468,6 @@ def test_evolving_duration_cell_reads_as_object():
     str(Duration) is "+00:00:00.0000.0", and Duration.from_string cannot parse it, so
     the string path is unrecoverable -- clock.start()'s unary minus fails on it.
     """
-    from pymerlin.duration import ZERO, Duration, SECONDS
-
     registrar = Registrar()
     cell = registrar.cell(ZERO, evolution=lambda x, d: x + d)
     cell._cell_index = 0
@@ -488,8 +487,6 @@ def test_evolving_duration_cell_reads_as_object():
 
 def test_evolving_duration_cell_writes_as_object():
     """Writing a Duration-valued evolving cell keeps it a Duration, not str()."""
-    from pymerlin.duration import ZERO, Duration, SECONDS
-
     registrar = Registrar()
     cell = registrar.cell(ZERO, evolution=lambda x, d: x + d)
     cell._cell_index = 0
@@ -589,11 +586,9 @@ def test_linear_cell_accepts_one_sided_bounds():
 # so the engine cuts a segment there.
 #
 # These mirror ShimModelType's getExpiry/getDynamics arithmetic in Python. They
-# pin the maths; the Java wiring itself needs a GraalPy host (see §7 of
-# linear_evolution_roadmap.md for how that split is handled).
+# pin the maths so it can be tested anywhere; verifying the Java wiring itself
+# needs a provisioned GraalPy host, so those assertions live in the JUnit suite.
 # ---------------------------------------------------------------------------
-
-import math as _math
 
 
 def _expiry_seconds(value, rate, minimum, maximum):
