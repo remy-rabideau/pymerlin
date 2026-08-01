@@ -68,6 +68,46 @@ def _thermal_evolution(state, elapsed):
     return target_c + (temp_c - target_c) * math.exp(-dt_s / _THERMAL_TAU_S), heat_input_w
 
 
+# Time constant for the electronics-box heatsink -- shorter than the structural tau
+# because it is thermally coupled directly to the PCBs rather than through the airframe.
+_HEATSINK_TAU_S = 300.0   # 5-minute time constant
+
+# Steady-state heatsink rise per Watt. Higher than _THERMAL_C_PER_W because the
+# heatsink has less thermal mass than the full structure and radiates less efficiently.
+_HEATSINK_C_PER_W = 1.2
+
+
+def _heatsink_evolution(state, elapsed):
+    """Evolution function for heatsink_temp_c: exponential approach to a target derived
+    from the current bus power.
+
+    State is the tuple (heatsink_temp_c, target_c) -- the cell carries its own
+    equilibrium target, exactly as temperature_c carries its heat input. The target must
+    live in cell state rather than a module-level global: cell state is snapshotted by
+    Aerie's duplicate() and travels with the cell, whereas a module global belongs to
+    whichever GraalPy Context happens to be loaded. Each simulation reloads the module in
+    a fresh Context, so a global resets to its declaration value independently of the
+    cell it is supposed to describe -- the target silently reverts to ambient while the
+    temperature keeps the value it had, and the two disagree.
+    """
+    temp_c, target_c = state
+    dt_s = elapsed.to_number_in(SECONDS)
+    return target_c + (temp_c - target_c) * math.exp(-dt_s / _HEATSINK_TAU_S), target_c
+
+
+def _recompute_heatsink_target(mission):
+    """Update the heatsink equilibrium target from the current bus power draw.
+
+    Called alongside _recompute_heat_input so both thermal resources track the same
+    power event. Emitting the CURRENT temperature alongside the new target lets evolution
+    continue from where it left off rather than teleporting to the target -- the same
+    emit-then-keep-evolving pattern as temperature_c.
+    """
+    current_hs, _old_target = mission.heatsink_temp_c.get()
+    target_c = _AMBIENT_TEMP_C + mission.power_w.get() * _HEATSINK_C_PER_W
+    mission.heatsink_temp_c.emit((current_hs, target_c))
+
+
 def _recompute_heat_input(mission):
     """Re-derive the heat dumped into the structure from the CURRENT power draw.
 
@@ -134,6 +174,7 @@ def _recompute_power_effects(mission):
     mission.energy_wh.emit((cumulative_wh, net_w))
 
     _recompute_heat_input(mission)
+    _recompute_heatsink_target(mission)
 
 
 @MissionModel
@@ -169,13 +210,31 @@ class Mission(MissionModelBase):
         # a discrete resource only when something reads the cell, so a quiet stretch would
         # otherwise collapse into one profile segment holding just its endpoint and the
         # curve would render as a single cliff. 30s keeps the plotted profile smooth
-        # without calling the evolution function excessively. (The profile is still a
-        # staircase -- a discrete resource is piecewise-constant by definition. Emitting
-        # RealDynamics for a smooth line is a separate, later feature.)
+        # without calling the evolution function excessively.
+        #
+        # `dynamics='real'` makes each 30-second segment a SLOPED CHORD rather than a flat
+        # step: the Java shim evaluates the evolution function one resolution ahead to
+        # get the secant slope, so the profile drawn in PlanDev follows the exponential
+        # curve between samples. Physically appropriate because thermal approach to
+        # equilibrium is a smooth exponential -- flat steps give the right endpoints but
+        # show a staircase; real dynamics show the actual curve.
         self.temperature_c = registrar.cell(
             (_AMBIENT_TEMP_C, 0.0),
             evolution=_thermal_evolution,
-            resolution=Duration.of(30, SECONDS))
+            resolution=Duration.of(30, SECONDS),
+            dynamics="real")
+
+        # Electronics-box heatsink temperature, dynamics='real'. State is the tuple
+        # (heatsink_temp_c, target_c): like temperature_c, the cell carries the
+        # equilibrium it is relaxing toward, so evolution needs nothing beyond the cell
+        # itself. The heatsink tracks the bus temperature but with a shorter time constant
+        # (it is thermally coupled to the electronics directly, not through the structural
+        # mass). Each segment is a sloped chord, so a warm-up shows as a smooth curve.
+        self.heatsink_temp_c = registrar.cell(
+            (_AMBIENT_TEMP_C, _AMBIENT_TEMP_C),
+            evolution=_heatsink_evolution,
+            resolution=Duration.of(30, SECONDS),
+            dynamics="real")
 
         # TUPLE state: (cumulative_watt_hours, current_net_watts). Evolution integrates the
         # first element using the second, so the cell carries its own rate the way
@@ -201,6 +260,7 @@ class Mission(MissionModelBase):
         # keeps that link.
         registrar.resource("/temperature_c", self.temperature_c.map(lambda s: s[0]))
         registrar.resource("/energy_wh", self.energy_wh.map(lambda s: s[0]))
+        registrar.resource("/heatsink_temp_c", self.heatsink_temp_c.map(lambda s: s[0]))
 
 
 @Mission.ActivityType
@@ -346,8 +406,10 @@ def thermal_soak(mission, heater_w=50.0):
     for _ in range(4):
         delay("00:05:00")
         temp_c, _heat_w = mission.temperature_c.get()
+        hs_c, _target_c = mission.heatsink_temp_c.get()
         print(f"[thermal_soak] t={clk.get()} "
               f"temp={temp_c:.2f}C "
+              f"heatsink={hs_c:.2f}C "
               f"energy={mission.energy_wh.get()[0]:.3f}Wh")
 
     # Turn the heater off and let it coast back down on its own.

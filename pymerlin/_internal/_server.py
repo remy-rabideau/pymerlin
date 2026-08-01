@@ -315,10 +315,7 @@ class _ModelState:
             typed_from = current
             projection = self._resource_projection_for(cell_ref)
             if projection is not None:
-                try:
-                    typed_from = projection(current)
-                except Exception:
-                    typed_from = current
+                typed_from = projection(current)
             if isinstance(typed_from, bool):
                 vtype = "bool"
             elif isinstance(typed_from, int):
@@ -327,6 +324,17 @@ class _ModelState:
                 vtype = "float"
             else:
                 vtype = "str"
+            dynamics = getattr(cell_ref, "_dynamics", "discrete")
+            # §3.5: RealDynamics is numeric — reject non-numeric published types early
+            # rather than letting Java silently produce a broken resource. Check here
+            # because this is the first point where both the cell and its projection
+            # are known. (bool subclasses int, so it is excluded separately.)
+            if dynamics == "real" and vtype not in ("int", "float"):
+                raise ValueError(
+                    f"dynamics='real' requires a numeric published value, but cell "
+                    f"with resource {res_name!r} publishes type {vtype!r}. Use a "
+                    f".map(fn) projection that returns a float, or use "
+                    f"dynamics='discrete' for non-numeric evolving cells.")
             desc = {
                 "initial": str(current),
                 "resource": res_name,
@@ -342,6 +350,8 @@ class _ModelState:
                 if resolution is not None:
                     desc["resolution_micros"] = str(
                         int(resolution.to_number_in(MICROSECONDS)))
+                if dynamics == "real":
+                    desc["dynamics"] = "real"
             cells.append(desc)
         return cells
 
@@ -402,7 +412,15 @@ class _ModelState:
         projections = []
         for cell_ref, _iv, _ev in self._registrar.cells:
             fn = by_cell.get(id(cell_ref))
-            projections.append(_wrap_projection(fn) if fn is not None else None)
+            if fn is None:
+                projections.append(None)
+            elif getattr(cell_ref, "_dynamics", "discrete") == "real":
+                # A real resource is consumed as a number, so hand the value over as one.
+                # Stringifying here would make every sample a float -> str -> parseDouble
+                # round trip on the Java side for no benefit.
+                projections.append(fn)
+            else:
+                projections.append(_wrap_projection(fn))
         return projections
 
     def describe_resources(self) -> dict:
@@ -415,7 +433,11 @@ class _ModelState:
 
 def _wrap_projection(fn):
     """Wrap a resource projection so Java can call it with a raw cell value and get back
-    the resource's value as a string, ready to hand to the profile."""
+    the resource's value as a string, ready to hand to the profile.
+
+    Discrete resources only -- their Java getter reads the result with asString(), which
+    requires an actual string. Real resources skip this wrapper (see
+    get_resource_projections) because their getter wants a number."""
     def _projected(value):
         return str(fn(value))
     return _projected

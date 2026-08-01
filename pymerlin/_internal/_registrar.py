@@ -10,7 +10,7 @@ class Registrar:
         self.resources = []
         self.topics = []
 
-    def cell(self, initial_value, evolution=None, resolution=None):
+    def cell(self, initial_value, evolution=None, resolution=None, dynamics="discrete"):
         """
         Declare a cell.
 
@@ -31,9 +31,41 @@ class Registrar:
         intermediate samples) or where only read-time values matter. Smaller values mean
         more profile fidelity and more evolution calls; pick the coarsest value that still
         renders acceptably.
+
+        ``dynamics`` controls the resource type published to PlanDev:
+
+        - ``"discrete"`` (default): each profile segment holds a flat value.
+        - ``"real"``: each profile segment carries ``{initial, rate}`` — a value and a
+          slope — so the segment is drawn as a sloped chord. The slope is the secant
+          over one ``resolution`` interval, computed by evaluating the evolution function
+          one interval ahead. Requires both ``evolution`` and ``resolution``.
+
+        Note that ``dynamics="real"`` does NOT remove sampling; a nonlinear function still
+        needs one segment per ``resolution`` interval. It changes what each segment
+        *looks like* (chord vs flat step), not how many there are. The ``resolution`` also
+        sets the lookahead interval for slope estimation, so changing it alters computed
+        slopes.
+
+        **Standalone simulate() is unaffected.** The pure-Python engine always produces
+        flat-value ``ProfileSegment`` objects regardless of this setting — ``dynamics="real"``
+        only takes effect when the model runs in-process inside a PlanDev worker via GraalPy.
+        Use ``simulate()`` to check model logic; use the JUnit suite for profile-fidelity
+        assertions.
         """
+        if dynamics not in ("discrete", "real"):
+            raise ValueError(
+                f"dynamics must be 'discrete' or 'real', got {dynamics!r}")
+        if dynamics == "real" and evolution is None:
+            raise ValueError(
+                "dynamics='real' requires an evolution function — a non-evolving "
+                "cell has no curve to compute a slope from")
+        if dynamics == "real" and resolution is None:
+            raise ValueError(
+                "dynamics='real' requires a resolution — the resolution sets the "
+                "lookahead interval for slope estimation")
         ref = CellRef()
         ref._is_evolving = evolution is not None
+        ref._dynamics = dynamics
         if resolution is not None:
             ref._resolution = resolution
         self.cells.append((ref, initial_value, evolution))
@@ -188,6 +220,7 @@ class CellRef(Gettable):
         self._value_type = str     # type of the cell value, set by _ModelState
         self._resolution = None    # max re-sample interval for evolving cells (Duration)
         self._is_evolving = False  # True when declared with evolution=, set by Registrar.cell
+        self._dynamics = "discrete"  # "discrete" or "real", set by Registrar.cell
 
     def emit(self, event):
         if not callable(event):

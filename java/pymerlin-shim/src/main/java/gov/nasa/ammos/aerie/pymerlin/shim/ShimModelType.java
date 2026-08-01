@@ -359,17 +359,57 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                             // resource is the raw value itself.
                             final Value projection = (i < resourceProjections.size())
                                 ? resourceProjections.get(i) : null;
-                            builder.resource(resName, new Resource<String>() {
-                                @Override public String getType() { return "discrete"; }
-                                @Override public OutputType<String> getOutputType() { return typedOutputType(capturedVtype); }
-                                @Override public String getDynamics(Querier q) {
-                                    Value raw = q.getState(capturedCell)[0];
-                                    if (projection != null) {
-                                        return projection.execute(raw).asString();
+                            final String cellDynamics = (cellMeta.has("dynamics") && !cellMeta.get("dynamics").isJsonNull())
+                                ? cellMeta.get("dynamics").getAsString() : "discrete";
+                            if ("real".equals(cellDynamics)) {
+                                // Real evolving resource (roadmap §3.2, Option A):
+                                // each segment carries {initial, rate} where rate is the
+                                // secant over one resolution interval:
+                                //   slope = (value_at(t + r) - value_at(t)) / r_seconds
+                                // Requires resolution (validated Python-side in Step 1).
+                                final Value capturedEvolutionFn = evolutionFn;
+                                final long capturedResolutionMicros = resolution != null
+                                    ? resolution.in(Duration.MICROSECONDS) : 0L;
+                                final double capturedResolutionSeconds = capturedResolutionMicros / 1_000_000.0;
+                                final String capturedResName = resName;
+                                builder.resource(resName, new Resource<RealDynamics>() {
+                                    @Override public String getType() { return "real"; }
+                                    @Override public OutputType<RealDynamics> getOutputType() { return realOutputType(); }
+                                    @Override public RealDynamics getDynamics(Querier q) {
+                                        Value raw = q.getState(capturedCell)[0];
+                                        // Project the raw cell value to a double for 'now'.
+                                        double now = toDouble(raw, projection, capturedResName, "value");
+                                        // Lookahead: call the evolution function one resolution
+                                        // interval ahead to get the far end of the secant.
+                                        // This is a pure read — no mutation of cell state.
+                                        final Value ahead;
+                                        try {
+                                            ahead = capturedEvolutionFn.execute(raw, capturedResolutionMicros);
+                                        } catch (RuntimeException e) {
+                                            throw new RuntimeException(
+                                                "Resource '" + capturedResName + "' (dynamics='real'): evolution "
+                                                + "function raised during slope lookahead: " + e.getMessage()
+                                                + " (raw cell value: " + raw + ")", e);
+                                        }
+                                        double next = toDouble(ahead, projection, capturedResName, "lookahead");
+                                        double slope = capturedResolutionSeconds > 0.0
+                                            ? (next - now) / capturedResolutionSeconds : 0.0;
+                                        return RealDynamics.linear(now, slope);
                                     }
-                                    return raw.toString();
-                                }
-                            });
+                                });
+                            } else {
+                                builder.resource(resName, new Resource<String>() {
+                                    @Override public String getType() { return "discrete"; }
+                                    @Override public OutputType<String> getOutputType() { return typedOutputType(capturedVtype); }
+                                    @Override public String getDynamics(Querier q) {
+                                        Value raw = q.getState(capturedCell)[0];
+                                        if (projection != null) {
+                                            return projection.execute(raw).asString();
+                                        }
+                                        return raw.toString();
+                                    }
+                                });
+                            }
                         }
                         continue;
                     }
@@ -780,6 +820,52 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         if (s == null) return fallback;
         try { return Double.parseDouble(s.trim()); }
         catch (NumberFormatException e) { return fallback; }
+    }
+
+    /**
+     * Convert a GraalPy {@link Value} (optionally projected) to a Java {@code double}.
+     * Used by the real evolving-cell {@code getDynamics} to extract the numeric value
+     * for both the current and lookahead samples.
+     *
+     * Throws rather than returning a sentinel on failure. A non-numeric value here used
+     * to become {@code Double.NaN}, which is silently accepted by RealDynamics and only
+     * surfaces much later inside {@code SerializedValue.of} as
+     * "Character N is neither a decimal digit number..." -- a BigDecimal parse error with
+     * no mention of the model, the cell, or the value that caused it. Failing at the point
+     * of conversion keeps the resource name and the offending value in the message.
+     *
+     * @param raw        The raw cell value (live Python object).
+     * @param projection A Python callable {@code raw -> published_value}, or {@code null}
+     *                   when the resource IS the raw value (no {@code .map(fn)}).
+     * @param resName    Resource name, for diagnostics only.
+     * @param what       Which sample this is ("value" or "lookahead"), for diagnostics only.
+     */
+    private static double toDouble(Value raw, Value projection, String resName, String what) {
+        final Value target;
+        try {
+            target = (projection != null) ? projection.execute(raw) : raw;
+        } catch (RuntimeException e) {
+            // A projection or evolution function that raises reaches us as a PolyglotException.
+            throw new RuntimeException(
+                "Resource '" + resName + "' (dynamics='real'): " + what
+                + " projection raised " + e.getClass().getSimpleName() + ": " + e.getMessage()
+                + " (raw cell value: " + raw + ")", e);
+        }
+        if (target.isNumber()) return target.asDouble();
+        // A projection can still hand back a string: the discrete path stringifies on the
+        // Python side, and a user's own .map(fn) may return text. Read it with asString(),
+        // NOT toString() -- toString() is a debug rendering, and for a Python str it is
+        // repr(), so "5.0" arrives as "'5.0'", quotes included, and fails to parse with a
+        // message that shows the quotes and looks like the model's fault.
+        String s = target.isString() ? target.asString() : target.toString();
+        try { return Double.parseDouble(s.trim()); }
+        catch (NumberFormatException e) {
+            throw new RuntimeException(
+                "Resource '" + resName + "' (dynamics='real') produced a non-numeric "
+                + what + ": " + s + " -- dynamics='real' requires a number. Either return "
+                + "a float from the evolution function, or add a .map(fn) projection that "
+                + "selects a numeric element, or use dynamics='discrete'.", e);
+        }
     }
 
     /**

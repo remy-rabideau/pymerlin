@@ -1,8 +1,17 @@
 """
 Pure-Python discrete-event simulation driver for PyMerlin.
 
-Drives a @MissionModel class directly — no Java, no py4j.
-Returns the same (profiles, spans, events) tuple as the old gateway-based simulate().
+Drives a @MissionModel class directly — no Java, no GraalPy.
+Returns the same (profiles, spans, events) tuple as the Java-backed simulate().
+
+``dynamics='real'`` (real_evolution_roadmap.md) affects only the Java/GraalPy execution
+path: when a packaged model runs inside a PlanDev worker, the Java shim registers a
+``RealDynamics`` resource and computes a secant slope in ``getDynamics()``. This driver
+does not replicate that — every ``ProfileSegment.dynamics`` field is a plain Python value
+(the snapshot at the segment's left edge), regardless of the cell's ``dynamics`` setting.
+This is intentional: the standalone engine is a lightweight logic checker, not a
+profile-fidelity oracle. If you need to assert on slopes, run the JUnit suite against a
+provisioned GraalPy host.
 """
 
 import warnings
