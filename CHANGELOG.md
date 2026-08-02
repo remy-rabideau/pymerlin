@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-08-02)
+
+### Added
+- **`dynamics='real'` for evolving cells.** `registrar.cell(..., dynamics='real')` publishes
+  a `RealDynamics` resource instead of a discrete one, so each profile segment carries a
+  value *and* a slope and renders as a sloped chord rather than a flat step — a nonlinear
+  curve no longer draws as a staircase. The slope is the secant over one `resolution`
+  interval, taken by evaluating the evolution function that far ahead, so segment endpoints
+  stay exact and error within a segment is bounded by curvature. Requires both `evolution`
+  and `resolution`, validated at registration. Sampling is unchanged: a nonlinear function
+  still needs one segment per `resolution`. The pure-Python `simulate()` engine always
+  produces flat-value segments regardless of this setting — it checks model logic, not
+  profile fidelity.
 
 ### Fixed
 - **Resources that cannot reach PlanDev now fail loudly instead of vanishing.** The shim
@@ -11,6 +23,10 @@
   with the offending resource names and how to fix each one. Set
   `PYMERLIN_ALLOW_UNBACKED_RESOURCES=1` to downgrade to a warning while migrating a model.
   The pure-Python `simulate()` engine is unaffected and still publishes these resources.
+- **Numeric resource values no longer fail to parse.** The shim read polyglot values with
+  `toString()`, a debug rendering, so a Python `"5.0"` arrived as `"'5.0'"` and blew up in
+  `BigDecimal`; it now reads with `asString()`. A value that still won't parse raises naming
+  the offending resource and value, instead of surfacing as a parse error identifying neither.
 
 ### Documentation
 - Corrected the `python-resources/src/` description in `README.md` and
