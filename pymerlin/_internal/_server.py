@@ -223,6 +223,72 @@ class _ReactionContext:
 
 
 # ---------------------------------------------------------------------------
+# Resource backing check
+# ---------------------------------------------------------------------------
+
+# Escape hatch for a model that predates this check: downgrades the error below to a
+# warning so the model still loads, minus the resources that never worked anyway. Meant
+# for migrating an existing model, not as a permanent setting -- the resources really are
+# absent from the simulation either way.
+_ALLOW_UNBACKED_ENV = "PYMERLIN_ALLOW_UNBACKED_RESOURCES"
+
+
+def _report_unbacked_resources(untraceable, shadowed):
+    """Fail (or warn) when a registered resource will not exist in PlanDev.
+
+    Java registers one resource per cell, driven by describe_cells(). A resource whose
+    getter cannot be tied to a cell -- or whose cell another resource already claimed --
+    therefore gets no builder.resource(...) call and is simply absent from the simulation.
+
+    That absence used to be completely silent, and silent is the worst possible behaviour
+    here: the model uploads, simulates, and produces a dataset that is quietly missing
+    telemetry, so the numbers look fine and are wrong. Note this only bites on the packaged
+    path; the pure-Python simulate() engine iterates registrar.resources directly and
+    publishes all of these happily, so the same model file behaves differently in the two
+    places and the discrepancy only shows up after upload.
+    """
+    if not untraceable and not shadowed:
+        return
+
+    lines = []
+    if untraceable:
+        lines.append("  Not backed by any cell:")
+        lines.extend(f"    - {name!r}" for name in untraceable)
+        lines.append(
+            "    Fix: derive the resource from the cell it reads --\n"
+            "      registrar.resource(name, cell.map(fn))\n"
+            "    rather than an opaque getter --\n"
+            "      registrar.resource(name, lambda: fn(cell.get()))\n"
+            "    map() keeps the link back to the cell; a lambda or a bound method does\n"
+            "    not. A value computed from SEVERAL cells cannot be published on this\n"
+            "    path at all: compute it into its own cell, or drop the registration.")
+    if shadowed:
+        lines.append("  Sharing a cell with an earlier resource (first registration wins):")
+        lines.extend(
+            f"    - {name!r} (that cell is already published as {winner!r})"
+            for name, winner in shadowed)
+        lines.append("    Fix: give each published value its own cell.")
+
+    count = len(untraceable) + len(shadowed)
+    detail = "\n".join(lines)
+    summary = (f"{count} registered resource(s) cannot be published to PlanDev and would "
+               f"be missing from every simulation:")
+
+    if os.environ.get(_ALLOW_UNBACKED_ENV, "").strip().lower() in ("1", "true", "yes"):
+        print(f"[pymerlin] WARNING: {summary}\n{detail}\n"
+              f"  Loading anyway because {_ALLOW_UNBACKED_ENV} is set; these resources "
+              f"will not appear in the simulation results.",
+              file=sys.stderr)
+        return
+
+    raise ValueError(
+        f"[pymerlin] {summary}\n{detail}\n"
+        f"  These resources work under the local simulate() engine, which is why this may\n"
+        f"  be the first time it has surfaced. To load the model anyway without them, set\n"
+        f"  {_ALLOW_UNBACKED_ENV}=1.")
+
+
+# ---------------------------------------------------------------------------
 # Model state manager
 # ---------------------------------------------------------------------------
 
@@ -262,22 +328,37 @@ class _ModelState:
 
         # Associate each resource with the cell that backs it. The Java path registers
         # resources per-cell (see ShimModelType.instantiate), so a resource that cannot be
-        # traced to a cell here is never created on the Java side at all -- it silently
-        # disappears from the simulation rather than failing loudly.
+        # traced to exactly one unclaimed cell here is never created on the Java side at
+        # all. Both ways that can happen are collected and reported below rather than
+        # letting the resource quietly not exist.
+        untraceable = []  # no source cell at all
+        shadowed = []     # (name, name_that_won) -- cell already claimed by an earlier resource
+
         for resource_name, getter in self._registrar.resources:
             # A Gettable derived from a cell (cell.map(...)) carries its origin explicitly.
             source = getattr(getter, "_source_cell", None)
             if source is None:
                 source = getattr(getattr(getter, "__self__", None), "_source_cell", None)
-            if source is not None:
-                self.cell_id_to_resource[id(source)] = resource_name
+            if source is None:
+                for cell_ref, _iv, _ev in self._registrar.cells:
+                    if getter == cell_ref.get or (
+                        hasattr(getter, "__self__") and getter.__self__ is cell_ref
+                    ):
+                        source = cell_ref
+                        break
+            if source is None:
+                untraceable.append(resource_name)
                 continue
-            for cell_ref, _iv, _ev in self._registrar.cells:
-                if getter == cell_ref.get or (
-                    hasattr(getter, "__self__") and getter.__self__ is cell_ref
-                ):
-                    self.cell_id_to_resource[id(cell_ref)] = resource_name
-                    break
+            # First registration wins. Which one survives is arbitrary either way -- one of
+            # them has to lose, since describe_cells() carries a single resource name per
+            # cell -- but first-wins is at least predictable and is what the error says.
+            claimed = self.cell_id_to_resource.get(id(source))
+            if claimed is not None:
+                shadowed.append((resource_name, claimed))
+                continue
+            self.cell_id_to_resource[id(source)] = resource_name
+
+        _report_unbacked_resources(untraceable, shadowed)
 
         _globals.cell_values_by_id = self.cell_values
         _globals._current_context[2] = model_class

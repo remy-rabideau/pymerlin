@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Resources that cannot reach PlanDev now fail loudly instead of vanishing.** The shim
+  registers resources per-cell, so a resource whose getter couldn't be traced to a cell (an
+  opaque `lambda`, a method computing from several cells), or a second resource registered
+  against a cell that already backed one, was silently never created — the model uploaded
+  and simulated fine and produced a dataset quietly missing telemetry. Model load now raises
+  with the offending resource names and how to fix each one. Set
+  `PYMERLIN_ALLOW_UNBACKED_RESOURCES=1` to downgrade to a warning while migrating a model.
+  The pure-Python `simulate()` engine is unaffected and still publishes these resources.
+
+### Documentation
+- Corrected the `python-resources/src/` description in `README.md` and
+  `plandev/docker/graalpy/install.sh`: model sources are extracted to a temp directory added
+  to `sys.path`, not into `src/`, which exists only to satisfy `GraalPyResources`' convention.
+
+---
+
 ## 0.1.1 (2026-07-29)
 
 ### Added

@@ -60,8 +60,16 @@ produces (external-directory mode) is:
 ```
 /opt/pymerlin/python-resources/
   venv/   <- GraalPy virtualenv: pymerlin + numpy + spiceypy
-  src/    <- model .py, extracted from the uploaded JAR at simulation time
+  src/    <- empty; required by GraalPyResources' external-directory convention
 ```
+
+Your model source does **not** go in `src/`. At load time the shim extracts the bundled
+`.py` from the uploaded JAR into a fresh temp directory (`/tmp/pymerlin-model-*`) and adds
+that directory to `sys.path` directly, then deletes it when the simulation ends. `src/` is on
+the Python path by `GraalPyResources.contextBuilder(root)` convention and must exist for the
+context to build, but nothing is ever written to it. (Relocating the model source into `src/`
+was considered and deferred — it only becomes necessary if filesystem access is sandboxed,
+which would stop the shim from reading an arbitrary temp path.)
 
 **Packages available to a model:** the pre-built venv contains exactly **`pymerlin`,
 `numpy`, and `spiceypy`** (a fixed set — see `roadmap.md` §11.2). `pymerlin` is installed
@@ -110,7 +118,7 @@ PlanDev merlin-worker (JVM)
   └── ShimModelType  (loaded from mission-model.jar)
         └── GraalBridge → embedded GraalPy Context
               ↕ direct host calls (org.graalvm.polyglot.Value)
-            pymerlin model .py  (from python-resources/src)
+            pymerlin model .py  (extracted from the JAR to a temp dir on sys.path)
 ```
 
 - **Activity registration.** `ModelType.getDirectiveTypes()` /
@@ -178,6 +186,19 @@ now (see `roadmap.md` and `cell_evolution_roadmap.md`). What remains:
   `str`, or `bool` map to the matching `ValueSchema`; lists, dicts, enums, `Duration`, or
   custom classes fall through to `ValueSchema.STRING` and appear in the PlanDev UI as
   unvalidated string fields.
+- **Every published resource must be backed by exactly one cell.** The shim registers
+  resources per-cell, so a resource whose getter can't be traced to a cell — an opaque
+  `lambda: fn(cell.get())`, a bound method computing from several cells — cannot be
+  published, and neither can a second resource on a cell that already backs one. Use
+  `registrar.resource(name, cell.map(fn))`, which keeps the link to the cell; a value
+  derived from several cells has to be computed into its own cell first.
+
+  These resources *do* work under the local `simulate()` engine, so the same model file
+  behaves differently in the two places. Model load now fails with the offending resource
+  names rather than dropping them silently (which produced datasets that were quietly
+  missing telemetry). Set `PYMERLIN_ALLOW_UNBACKED_RESOURCES=1` to downgrade that to a
+  warning and load anyway, without those resources — intended for migrating an existing
+  model, not as a permanent setting.
 
 ### Operational issues
 
