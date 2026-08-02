@@ -486,24 +486,24 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
     // -----------------------------------------------------------------
 
     /**
-     * Last requirements text this classloader has already reported, so the message is not
-     * repeated for every entry point that resolves the model ref (the server asks for
+     * Requirements text this classloader has already handed to the installer, so the work is
+     * not repeated for every entry point that resolves the model ref (the server asks for
      * activity types and configuration separately, and both land here).
      * <p>
-     * A static is the right scope for that and ONLY that. It must never become the cache
-     * that decides whether an install is still needed: Aerie loads each model through its
-     * own {@code URLClassLoader}, which reloads this class and resets every static, so such
-     * a cache would miss every time while looking like it worked. State that has to outlive
-     * a model load belongs on the filesystem, next to the venv it describes.
+     * A static is the right scope for that and ONLY that — it saves a redundant call within
+     * one model load. It is NOT what makes installs idempotent: Aerie loads each model
+     * through its own {@code URLClassLoader}, which reloads this class and resets every
+     * static, so a cache built on one would miss every time while looking like it worked.
+     * State that has to outlive a model load lives on the filesystem, in the marker files
+     * {@link RequirementsInstaller} writes next to the venv they describe.
      */
-    private static volatile String reportedRequirements = null;
+    private static volatile String preparedRequirements = null;
 
     /**
-     * Make the Python packages the model JAR declares available to the model.
+     * Install the Python packages the model JAR declares into the worker's GraalPy venv.
      * <p>
-     * Reading them is done; installing them into the worker's GraalPy venv is not wired up
-     * yet, so a model that imports something the image does not already provide still fails
-     * at import time. The log line below says so rather than leaving that silent.
+     * A model needing nothing beyond the image reaches neither the installer nor the venv,
+     * so nothing about packaging a model without dependencies changes.
      */
     private static void prepareRequirements(URL jarUrl, Manifest manifest) throws IOException {
         String requirements = readBundledRequirements(jarUrl, manifest);
@@ -512,13 +512,12 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
         List<String> declared = declaredPackages(requirements);
         if (declared.isEmpty()) return;   // a file of nothing but comments asks for nothing
 
-        if (requirements.equals(reportedRequirements)) return;
-        reportedRequirements = requirements;
+        if (requirements.equals(preparedRequirements)) return;
 
         System.err.println("[PyMerlin] Model declares " + declared.size()
             + " Python package(s): " + String.join(", ", declared));
-        System.err.println("[PyMerlin] Installing them into the worker venv is not implemented yet"
-            + " — the model will fail on import unless the image already provides them.");
+        RequirementsInstaller.install(requirements, PyContext.resolveResourcesRoot());
+        preparedRequirements = requirements;
     }
 
     /**
