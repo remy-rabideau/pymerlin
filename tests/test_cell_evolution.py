@@ -5,6 +5,7 @@ These tests run against the standalone Python simulation framework (_framework.p
 Java-side tests require a running Aerie worker and are out of scope here.
 """
 
+import contextlib as _contextlib
 import math as _math
 
 from pymerlin import MissionModel
@@ -675,3 +676,167 @@ def test_unbounded_cell_never_expires():
     assert _expiry_seconds(50.0, 1.0, None, None) is None
     assert _expiry_seconds(50.0, 0.0, 0.0, 100.0) is None      # no rate
     assert _expiry_seconds(100.0, 1.0, 0.0, 100.0) is None     # already at bound
+
+
+# ---------------------------------------------------------------------------
+# Real evolution — Step 7 tests (real_evolution_roadmap.md §4.7)
+# ---------------------------------------------------------------------------
+# Tests 1–4 are plain Python (no GraalPy host required).
+# Test 5 (JUnit, provisioned host) is out of scope here per the roadmap.
+# ---------------------------------------------------------------------------
+
+def test_real_dynamics_without_evolution_raises():
+    """dynamics='real' requires an evolution function."""
+    r = Registrar()
+    with _pytest_raises(ValueError, match="evolution"):
+        r.cell(0.0, dynamics="real")
+
+
+def test_real_dynamics_without_resolution_raises():
+    """dynamics='real' requires a resolution."""
+    r = Registrar()
+    with _pytest_raises(ValueError, match="resolution"):
+        r.cell(0.0, evolution=constant_slope(1), dynamics="real")
+
+
+def test_real_dynamics_invalid_value_raises():
+    """dynamics must be 'discrete' or 'real'."""
+    r = Registrar()
+    with _pytest_raises(ValueError, match="polynomial"):
+        r.cell(0.0, dynamics="polynomial")
+
+
+def test_real_dynamics_non_numeric_published_type_raises():
+    """A string-valued real cell must fail loudly at describe_cells() time (§3.5)."""
+    @MissionModel
+    class _M:
+        def __init__(self, registrar: Registrar):
+            self.mode = registrar.cell(
+                "IDLE",
+                evolution=lambda v, d: v,
+                resolution=Duration.of(30, SECONDS),
+                dynamics="real",
+            )
+            registrar.resource("/mode", self.mode)
+
+    state = _ModelState(_M, {})
+    with _pytest_raises(ValueError, match="numeric"):
+        state.describe_cells()
+
+
+def test_describe_cells_emits_dynamics_real():
+    """describe_cells() carries dynamics:'real' for opted-in cells only."""
+    @MissionModel
+    class _M:
+        def __init__(self, registrar: Registrar):
+            self.temp = registrar.cell(
+                5.0,
+                evolution=constant_slope(2),
+                resolution=Duration.of(30, SECONDS),
+                dynamics="real",
+            )
+            registrar.resource("/temp", self.temp)
+            self.count = registrar.cell(0, evolution=lambda v, d: v + 1,
+                                        resolution=Duration.of(60, SECONDS))
+            registrar.resource("/count", self.count)
+
+    state = _ModelState(_M, {})
+    cells = state.describe_cells()
+    temp_desc  = next(c for c in cells if c.get("resource") == "/temp")
+    count_desc = next(c for c in cells if c.get("resource") == "/count")
+
+    assert temp_desc.get("dynamics") == "real", temp_desc
+    assert temp_desc["evolving"] is True
+    assert "resolution_micros" in temp_desc
+
+    assert "dynamics" not in count_desc, (
+        "discrete evolving cell must not carry dynamics key")
+
+
+def test_real_dynamics_slope_arithmetic():
+    """Slope for constant_slope(2) at 30s resolution must be exactly 2.0/s.
+
+    The secant formula mirrors what Java's getDynamics() computes:
+        slope = (evolution(v, resolution_micros) - v) / resolution_seconds
+
+    For a linear evolution fn v + 2*t the secant IS the derivative, so the
+    result must match to float precision (no approximation error).
+    """
+    resolution_seconds = 30.0
+
+    initial_value = 5.0
+    evolution_fn  = constant_slope(2)   # f(v, d) = v + 2 * d.to_number_in(SECONDS)
+
+    # Replicate the lookahead formula from ShimModelType.getDynamics (Option A):
+    now  = initial_value
+    ahead_value = evolution_fn(initial_value, Duration.of(resolution_seconds, SECONDS))
+    slope = (ahead_value - now) / resolution_seconds
+
+    assert abs(slope - 2.0) < 1e-9, f"expected slope 2.0/s, got {slope}"
+
+
+def test_real_dynamics_slope_arithmetic_with_projection():
+    """Slope is derived from the PROJECTED value, not the raw cell state.
+
+    A tuple cell (temperature, heat_input) with a .map(lambda s: s[0])
+    projection must produce the slope of the temperature component only.
+    """
+    resolution_seconds = 30.0
+
+    def tuple_evolution(v, d):
+        dt = d.to_number_in(SECONDS)
+        return (v[0] + 2.0 * dt, v[1])   # temperature ramps at 2/s, heat_input constant
+
+    project = lambda s: s[0]
+    initial = (5.0, 15.0)
+
+    now_raw   = initial
+    ahead_raw = tuple_evolution(initial, Duration.of(resolution_seconds, SECONDS))
+
+    now   = project(now_raw)
+    ahead = project(ahead_raw)
+    slope = (ahead - now) / resolution_seconds
+
+    assert abs(slope - 2.0) < 1e-9, f"expected slope 2.0/s, got {slope}"
+
+
+def test_real_dynamics_regression_discrete_unchanged():
+    """A discrete evolving cell must not gain a dynamics key — regression guard."""
+    @MissionModel
+    class _M:
+        def __init__(self, registrar: Registrar):
+            self.temp = registrar.cell(
+                5.0,
+                evolution=constant_slope(1),
+                resolution=Duration.of(30, SECONDS),
+            )
+            registrar.resource("/temp", self.temp)
+
+    state = _ModelState(_M, {})
+    cells = state.describe_cells()
+    temp_desc = next(c for c in cells if c.get("resource") == "/temp")
+
+    assert "dynamics" not in temp_desc, (
+        f"discrete cell must not carry dynamics key: {temp_desc}")
+    assert temp_desc["evolving"] is True
+    assert temp_desc["type"] == "float"
+
+
+# ---------------------------------------------------------------------------
+# Helper: minimal pytest.raises stand-in so these tests run without pytest
+# (when invoked directly) and also work under pytest normally.
+# ---------------------------------------------------------------------------
+
+
+@_contextlib.contextmanager
+def _pytest_raises(exc_type, match=None):
+    """Minimal stand-in for pytest.raises usable in both pytest and __main__."""
+    import re as _re
+    try:
+        yield
+    except exc_type as e:
+        if match is not None:
+            assert _re.search(match, str(e)), (
+                f"Expected pattern {match!r} in: {e!r}")
+    else:
+        raise AssertionError(f"Expected {exc_type.__name__} to be raised")
