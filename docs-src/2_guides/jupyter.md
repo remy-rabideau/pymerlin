@@ -8,7 +8,7 @@ Jupyter notebooks. This makes notebooks ideal for rapid model iteration and visu
 Install pymerlin into your notebook environment (bokeh and numpy are included):
 
 ```shell
-pip install "pymerlin @ git+https://github.com/remy-rabideau/pymerlin.git@v0.2.0#subdirectory=pymerlin"
+pip install "pymerlin @ git+https://github.com/remy-rabideau/pymerlin.git@v0.2.1#subdirectory=pymerlin"
 ```
 
 ## Running a simulation

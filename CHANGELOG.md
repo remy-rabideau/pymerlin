@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.1 (2026-08-03)
+
+### Changed
+- **`spiceypy`, `bokeh`, and `numpy` are now core dependencies.** They were previously
+  declared as optional extras, but the extras block was commented out in `pyproject.toml`,
+  so `pip install pymerlin[spice]` installed nothing and `pymerlin.spice` failed to import.
+  Installing pymerlin now brings all three, matching what the docs already told users to
+  expect. Local `simulate()` still uses none of them.
+
+### Documentation
+- Rewrote the docs-src tree against v0.2.0: dual-engine architecture, the in-process shim
+  interface, packaging, cell/resource types, and the getting-started tutorial.
+- Fixed the `clock()` usage in the tutorial's reactive-integration example — `clock()`
+  returns a `ClockMaker`, and `.start()` must run inside the task, not in `__init__`.
+- Corrected the pymerlin and PlanDev repository links.
+
 ## 0.2.0 (2026-08-02)
 
 ### Added
