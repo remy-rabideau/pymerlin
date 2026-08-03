@@ -1,8 +1,10 @@
 # Background
-Here, you can learn more about some of the theory of simulation, planning, and simulation.
+
+Deeper explanations of the theory and design behind pymerlin and discrete-event simulation.
 
 ```{toctree}
 simulation
+concurrency
 planning
 fidelity
 command-errors

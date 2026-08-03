@@ -1,53 +1,44 @@
 # Integral Method Comparison
 
-:::{warning}
-This page is under construction. Please bear with us as we port
-our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
-:::
+Now that we have explored multiple approaches to integrating `recording_rate`, let's
+compare them.
 
-Now that we have explored multiple methods to implement integration in PlanDev, let's compare all of the methods in the
-PlanDev UI. To make things more interesting, use the 2nd approach to the `Polynomial` method so we can see how that
-approach enforces a data volume capacity. Package the current version of the model
-(`pymerlin package --model mission.py:Model --out mission-model.jar`, see the
-[Build a JAR guide](../../2_guides/build-jar.md)) and upload it into PlanDev. Build a new
-`1 day` plan off of that model and call it "Mission Plan 3".
+## Summary
 
-For this plan, throw a couple of `collect_data` activities near the beginning of the plan, create a `change_mag_mode`
-activity after those activities in the first half of the plan and set that activity's parameter to `HIGH_RATE`. Throw
-one more `collect_data` and `change_mag_mode` activity near the end of the plan to make sure we get a plan that goes over
-our data capacity threshold. With our simple plan built, go ahead and simulate the plan to see the resulting resource
-profiles.
+| Method | Profile shape | Accuracy | Efficiency |
+|---|---|---|---|
+| **1 — within activity** | flat steps | only at activity endpoints | low overhead |
+| **2 — daemon sampling** | staircase | approximate (depends on interval) | many wasted points |
+| **3 — rate-change reaction** | flat steps | exact at change points | fires only on change |
+| **4 — linear resource** | linear ramp | exact and continuous | built-in, no user code |
 
-The easiest way to compare our four integration methods is to use
-PlanDev's [Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) capability to build a row that
-includes all four of our data volume resources:
+## Try it in PlanDev
 
-- `ssr_volume_simple`
-- `ssr_volume_sampled`
-- `ssr_volume_upon_rate_change`
-- `ssr_volume_polynomial`
+Package your model and upload:
 
-If you do that, you'll get a timeline view that looks something like the screenshot below
+```shell
+pymerlin package --model mission.py:Model --out mission-model.jar
+```
 
-![Tutorial Plan 3](assets/Tutorial_Plan_3.png)
+See the [Build a JAR guide](../../2_guides/build-jar.md) for details.
 
-Looking at `ssr_volume_simple`, you'll see that data volume increases at the end of each `collect_data` activity, and for
-the first two activities, the result at the end of the activity is consistent with the other volumes. You may recall
-that we did not implement a data volume integration for the `change_mag_mode` activity for `ssr_volume_simple` (although
-we could have with some work), so as soon as one of those activities is introduced into our plan, our volume is no
-longer valid.
+Build a plan with a few `collect_data` and `change_mag_mode` activities, simulate, and
+use PlanDev's
+[Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) to put
+all volume resources on one row for easy visual comparison.
 
-`ssr_volume_sampled` has a nice looking profile when zoomed out at the expense of computing many points, which you can
-see if you zoom into a shorter time span. If you zoom far enough, you can see the stair-step associated with computation
-of each sampled point. If we were to change our sampling interval to something larger, we would lose some accuracy in
-our volume calculation if the activity start/end times aren't aligned with are sample points.
+## Key observations
 
-`ssr_volume_upon_rate_change` has much fewer points, but you can see that it produces the same volume as
-our `ssr_volume_polynomial` resource at the time points it computes until we go above our maximum
-capacity. `ssr_volume_polynomial` has same computed points as `ssr_volume_upon_rate_change`, but has linear profile
-segments in between points. It also has an additional point once it reaches the capacity threshold, and then it remains
-at that threshold for the remainder of the plan (we don't have any downlinks or we would see the volume decrease).
+- **Method 1** (`ssr_volume_simple`) jumps at activity endpoints but misses volume from
+  rate changes outside of activities (e.g. `change_mag_mode`).
+- **Method 2** (`ssr_volume_sampled`) looks smooth from a distance but shows a staircase
+  when you zoom in. Accuracy depends on the sampling interval.
+- **Method 3** (`ssr_volume_reactive`) computes the fewest points — it fires only when
+  the rate actually changes and is exact at those points.
+- **Method 4** (`ssr_volume_linear`) shows a true linear ramp in the PlanDev UI. With
+  `minimum`/`maximum` bounds, it automatically clamps at the SSR capacity — no overflow
+  logic needed.
 
-Hopefully looking at the various methods of integrating in PlanDev has given you some insight into the modeling constructs
-available to you. You can do a ton with what you have learned thus far, but next we'll go over some additional
-capabilities you will likely find useful as you build models with PlanDev.
+**Recommendation:** use `registrar.linear()` (Method 4) for any quantity that integrates
+a piecewise-constant rate. It's the least code, the most accurate, and produces the best
+visual in the PlanDev timeline.

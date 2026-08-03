@@ -1,27 +1,36 @@
 # Second Look
 
-:::{warning}
-This page is under construction. Please bear with us as we port
-our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
-:::
+With our second activity and resources built, let's test the model again. You can either
+run it locally with `simulate()` or package and upload to PlanDev.
 
-With our second activity and corresponding resources built, let's compile the model again and upload it into PlanDev (if
-you forget how to do this, refer to the [Model Test Drive Page](2-model-test-drive) for simple instructions and
-references). Build a new plan off of the model you just uploaded, name your plan `Mission Plan 2`, and give it a
-duration of `1 day`. When you open this plan, you will see your two activity types appear in the left panel, which you
-can drag and drop onto the plan. Add two `change_mag_mode` activities and change the parameter of the first one
-to `HIGH_RATE`. Add a `collect_data` activity in between the two `change_mag_mode` activities and then simulate.
+## Local test
 
-You should now see our three resources populate with values in the timeline below. You'll notice that now
-the `recording_rate` resource starts at zero until the `mag_data_mode` changes to `HIGH_RATE`, which pops up the rate
-to `5 Mbps`. Then, the `collect_data` activity increases the rate by another `10` to `15 Mbps`, but immediately decreases
-after the end of the activity. Finally, the `mag_data_mode` changes to `LOW_RATE`, which takes the rate down to `0.5 Mbps`
-until the end of the plan.
+```python
+from pymerlin import simulate, Schedule, Directive
 
-At this point, you can take the opportunity to play around with
-PlanDev's [Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) capability to change the colors
-of activities or lines or put multiple resources onto one row. Try putting the `mag_data_mode` and `mag_data_rate` on the
-same row so you can easily see how the mode changes align with the rate changes and change the color of `mag_data_rate` to
-red. With these changes you should get something similar to the screenshot below
+profiles, spans, events = simulate(
+    Model,
+    Schedule.build(
+        ("00:00:00", Directive("change_mag_mode", {"mode": "HIGH_RATE"})),
+        ("00:05:00", Directive("collect_data", {"rate": 10.0, "duration": "00:10:00"})),
+        ("00:20:00", Directive("change_mag_mode", {"mode": "LOW_RATE"})),
+    ),
+    "01:00:00"
+)
+```
+
+You should see `recording_rate` start at 0, jump to 5 Mbps when the mag mode changes to
+HIGH_RATE, increase by another 10 to 15 Mbps during `collect_data`, then drop back to 5
+after the activity ends, and finally fall to 0.5 Mbps when the mode switches to LOW_RATE.
+
+## In PlanDev
+
+Package and upload (`pymerlin package --model mission.py:Model --out mission-model.jar`),
+create a 1-day plan, drag in your activities, and simulate.
+
+Use PlanDev's
+[Timeline Editing](https://ammos.nasa.gov/aerie-docs/planning/timeline-editing/) to put
+`mag_data_mode` and `mag_data_rate` on the same row so you can see how mode changes drive
+rate changes.
 
 ![Tutorial Plan 2](assets/Tutorial_Plan_2.png)

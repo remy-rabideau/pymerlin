@@ -31,14 +31,28 @@ Java change means packaged models ship stale shim classes.
 
 ## Testing
 
-All tests are located in the `tests` directory, and are defined using pytest.
+### Python tests
 
-As of writing, tests can only be run in your current environment - so first run `pip install .`, and then `pytest`.
+All Python tests are in the `tests/` directory using pytest. Install the package first,
+then run them:
+
+```shell
+pip install -e .
+pytest
+```
 
 Key test files:
 - `tests/test_simulation.py` — core simulation tests (delays, emits, spawn, call, wait_until).
 - `tests/test_cell_evolution.py` — cell evolution tests (evolving cells, clamped linear
-  bounds, evolution projections). Added in 0.1.1.
+  bounds, evolution projections).
+
+### Java/GraalPy tests
+
+The in-process JUnit suite (`DemoModelSimulationTest`, `SpanTimingTest`,
+`CallSemanticsTest`) runs against a real GraalPy runtime and a provisioned
+`python-resources` venv — i.e. the built worker image. On a stock JDK without that
+environment the tests `assumeTrue`-skip rather than false-fail. See
+`java/pymerlin-shim/build.gradle` for the `dockerTestBundle` task.
 
 Future aspiration: use `tox` to test on multiple versions of python.
 

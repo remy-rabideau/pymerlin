@@ -1,10 +1,5 @@
 # Enumerated and Derived Resources
 
-:::{warning}
-This page is under construction. Please bear with us as we port
-our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
-:::
-
 In addition to our on-board camera, let's imagine that we also have an instrument on-board that is continuously
 collecting data, say a magnetometer, based on a data collection mode. Perhaps at especially interesting times in the
 mission, the magnetometer is placed in a high rate collection mode and at other times remains in a low rate collection
@@ -34,7 +29,7 @@ to initialize the resource to `OFF` and register it with the UI.
 
 ```python
 self.mag_data_mode = registrar.cell("OFF")
-registrar.resource("mag_data_mode", mag_data_mode.get)
+registrar.resource("mag_data_mode", self.mag_data_mode)
 ```
 
 As you can see, declaring and defining this resource was not much different than when we built `recording_rate` except
@@ -54,12 +49,13 @@ registration code for `mag_data_rate` then becomes
 
 ```python
 self.mag_data_rate = self.mag_data_mode.map(lambda mode: MagDataCollectionMode[mode])
-registrar.resource("mag_data_rate", self.mag_data_rate.get)
+registrar.resource("mag_data_rate", self.mag_data_rate)
 ```
 
-:::{info}
+:::{note}
 Instead of deriving a cell value from a function using `map()`, you can directly add or subtract cells, for example:
-`````python
+```python
 self.total_data_rate = self.mag_data_rate + self.recording_rate
-````
+registrar.resource("total_data_rate", self.total_data_rate)
+```
 :::

@@ -28,13 +28,24 @@ give it a name and version, then
 ## What the worker must provide
 
 The JAR carries only the shim, its `gson` dependency, and your model source — **not** the
-Python runtime or any Python packages. Those come from the PlanDev worker image, which ships an
-embedded GraalPy plus a pre-built virtual environment containing `pymerlin`, `numpy`, and
-`spiceypy`. If your model imports a package that isn't in that venv, it's an **image rebuild**,
-not a JAR change. The full worker-image contract — the venv layout, the exact package set, and
-how to add a package — is documented in the project
-[README](https://github.com/mattdailis/pymerlin) ("Worker-image contract") and `roadmap.md`
-§4/§11.2.
+Python runtime or any Python packages. The GraalPy runtime and stdlib come from the PlanDev
+worker image, which also ships a pre-built virtual environment containing `pymerlin`, `numpy`,
+and `spiceypy`.
+
+Any **additional** packages the model imports are handled automatically: `pymerlin package`
+detects third-party imports in your model source, pins them to the versions installed in your
+local environment, and bundles the result as a `requirements.txt` inside the JAR. When the
+model JAR is **uploaded** to PlanDev, the worker pip-installs any missing packages from that
+file into the GraalPy venv — so by the time a simulation runs, every dependency is already
+present. This means:
+
+- You don't need an image rebuild just because your model imports a new pure-Python package.
+- Versions are pinned to what you had when you ran `pymerlin package`.
+- If the package requires native compilation and the worker image lacks the toolchain, the
+  install will fail at upload time (not silently at simulation time).
+
+Use `--no-requirements` to skip auto-detection if you know the worker image already has
+everything you need.
 
 ## Testing without uploading
 

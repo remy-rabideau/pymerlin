@@ -18,6 +18,20 @@ The same `@MissionModel` class runs in two different runtimes, depending on what
   no subprocess and no serialization protocol between them. This is what `pymerlin package`
   produces and what an uploaded model uses.
 
+### Differences between the two engines
+
+| | Local `simulate()` | Packaged upload |
+|---|---|---|
+| **Threads** | `threading.Thread` + two `Queue`s per activity | Java virtual threads (`ThreadedTask`) |
+| **`wait_until`** | polls, advancing 1 µs at a time | real `Condition` with dependency tracking |
+| **`call()`** | resumes immediately (not fully implemented) | genuinely blocks the parent until the child completes |
+| **Profiles** | flat `ProfileSegment(extent, dynamics)` only | discrete **and** real (`{initial, rate}`) profiles |
+| **`dynamics="real"`** | ignored | honored — sloped chords in PlanDev UI |
+
+The local engine is a lightweight logic checker, not a profile-fidelity oracle. Use it to verify
+your model *does the right things*; use the JUnit suite or a real deployment to check what the
+profile *looks like*.
+
 The rest of this document describes the packaged, in-process path, since that's the one with
 the interesting Java↔Python boundary; the local engine is an ordinary Python program.
 
@@ -26,8 +40,7 @@ the interesting Java↔Python boundary; the local engine is an ordinary Python p
 > because PlanDev requires **Java** to own the process and load mission models through its own
 > classloader. A middle iteration replaced py4j with a Java-owned subprocess speaking
 > newline-delimited JSON over stdin/stdout; the current architecture replaces *that* with an
-> in-process GraalPy `Context`. The full rationale and the phase-by-phase migration record are
-> in [`roadmap.md`](../../roadmap.md); the interface itself is documented in
+> in-process GraalPy `Context`. The interface itself is documented in
 > [Shim architecture](shim-protocol.md).
 
 ## In-process execution
@@ -48,6 +61,43 @@ carrying the Python stack, cells are real PlanDev cells (so `wait_until` registe
 dependencies rather than polling), `call()` blocks the parent task until the child completes,
 and cell evolution functions (`registrar.cell(initial, evolution=fn)`) are called automatically
 by the engine as time advances — none of which the subprocess protocol could do cleanly.
+
+## Packaging workflow
+
+`pymerlin package --model path/to/model.py:ClassName --out model.jar` produces a
+PlanDev-uploadable JAR. No JDK is required. The command:
+
+1. Opens the prebuilt shim JAR (`pymerlin/_internal/jars/pymerlin-shim.jar`).
+2. Copies every entry into the output JAR, rewriting only `META-INF/MANIFEST.MF` to
+   stamp `Pymerlin-Model-Ref`.
+3. Bundles your model `.py` source under `pymerlin_models/` inside the JAR. If the
+   model sits next to an `__init__.py`, the whole package directory is bundled so
+   intra-package imports work.
+
+The resulting JAR contains only shim classes, the bundled `gson` dependency, and your
+`.py` files — no GraalPy runtime, no Python stdlib, no third-party packages. The GraalPy
+runtime and stdlib come from the worker image, which also pre-installs `numpy` and
+`spiceypy` from wheels at image build time so they are always available. Any additional
+packages the model needs (detected from its imports and bundled as a `requirements.txt`
+inside the JAR) are pip-installed into the worker's GraalPy venv **when the model is
+uploaded** — not at simulation time (see the [packaging guide](2_guides/build-jar.md)
+for details).
+
+## Cells and resources
+
+pymerlin provides four kinds of cell, each of which maps to a different Aerie resource type:
+
+| Declaration | Profile shape | Use for |
+|---|---|---|
+| `registrar.cell(v)` | flat (discrete) | modes, counters, booleans, enums |
+| `registrar.cell(v, evolution=fn, resolution=r)` | flat segments, sampled at `resolution` | nonlinear evolving quantities |
+| `registrar.cell(v, evolution=fn, resolution=r, dynamics="real")` | sloped chords (secant slope) | smooth curves (exponential decay, etc.) |
+| `registrar.linear(v, rate=r, minimum=..., maximum=...)` | linear ramps, clamped at bounds | batteries, buffers, cumulative counters |
+
+Every published resource must be backed by exactly one cell. Use `cell.map(fn)` (not a
+bare `lambda`) to project a cell's value into a resource — `map()` preserves the link so
+the Java shim can trace the resource back to its backing cell. See the
+[shim architecture](shim-protocol.md) page for the full Java↔Python interface.
 
 ## Approachability over performance
 

@@ -1,14 +1,16 @@
 # User Guides
-This section contains targeted how-to guides for things you might want to do with pymerlin.
+
+Targeted how-to guides for common tasks with pymerlin.
 
 ```{toctree}
+build-jar
 organization
+spice
+jpl-time
 jupyter
 datamodel
 powermodel
 telecom
 scheduling
-spice
-build-jar
 monte-carlo
 ```

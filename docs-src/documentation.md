@@ -29,7 +29,7 @@ As a python library, user-facing documentation should be targeted towards people
 not a lot of it. There's no need to explain basic concepts like functions or variables, but less common features like
 decorators or context managers deserve a brief comment and a link to python documentation.
 
-Little to know Java knowledge should be expected.
+Little to no Java knowledge should be expected.
 
 The Background section can get a bit more technical in some aspects, but should still include links to relevant
 documentation.

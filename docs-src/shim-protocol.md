@@ -38,15 +38,22 @@ At load time, `GraalBridge` builds a GraalPy `Context`, puts the model's source 
 | `getActivityTypes()` | `_describe_activity_types(model_class)` | `getDirectiveTypes()`, model-class only |
 | `getConfigParameters()` | `_describe_config(model_class)` | `getConfigurationType()`, model-class only |
 | `setConfiguration(json)` | (stored; passed to `_ModelState`) | before the model state is built |
-| `getResources()` | `_ModelState.describe_resources()` | after `instantiate()` |
-| `getResourceValue(name)` | `_ModelState.get_resource_value(name)` | resource extraction |
-| `getCells()` | `_ModelState.describe_cells()` | after `instantiate()` (Phase 4) |
-| `getEvolutionFunctions()` | `_ModelState.get_evolution_functions()` | after `getCells()` — returns per-cell evolution callables (0.1.1) |
+| `getCells()` | `_ModelState.describe_cells()` | `instantiate()` — per-cell metadata, index-aligned |
+| `getEvolutionFunctions()` | `_ModelState.get_evolution_functions()` | `instantiate()` — per-cell `fn(value, micros)` callables |
+| `getInitialValues()` | `_ModelState.get_initial_values()` | `instantiate()` — live Python objects, not strings |
+| `getResourceProjections()` | `_ModelState.get_resource_projections()` | `instantiate()` — per-cell `raw → published` functions from `.map()` |
+| `getParseValueFn()` | (pre-fetched `_parse_value`) | `instantiate()` — used by emit to parse string→typed |
+| `getResources()` | `_ModelState.describe_resources()` | *(currently unused — resources registered per-cell)* |
+| `getResourceValue(name)` | `_ModelState.get_resource_value(name)` | *(currently unused)* |
 | `runActivityDirect(...)` | `run_activity_direct(model_state, actions, name, args)` | per activity |
 
 Registration queries (`getActivityTypes`/`getConfigParameters`) only touch the model *class*,
 so they never instantiate the model — a metadata-only bridge is cheap. The model's
 `_ModelState` (and its cells) is built lazily on first use.
+
+All `List<Value>` / `JsonArray` queries are **index-aligned to `registrar.cells` order** —
+`CellRef._cell_index` on the Python side, `cellsByIndex` on the Java side. This index is
+the entire Python↔Java cell contract.
 
 ## Python → Java: `PyActions`
 
@@ -58,10 +65,12 @@ synchronous host call that returns control to Python when the engine says so.
 | Model call (Python) | `PyActions` method | Effect |
 |---|---|---|
 | `delay(duration)` | `delay(micros)` | `ModelActions.delay(...)` parks this task thread |
-| `cell.emit(value)` | `emitCell(cellIndex, value)` | emit to the cell's topic (Phase 4) |
-| `cell.set_rate(r)` | `setRate(cellIndex, rate)` | set a linear cell's rate (Phase 4) |
-| `cell.get()` | `ask(cellIndex)` | `ModelActions.ask(cellId)`; registers a read dependency during `wait_until` |
-| `spawn(child(...))` | `spawnActivity(name, argsJson)` | a fresh child `ThreadedTask` |
+| `cell.emit(value)` (non-evolving) | `emitCell(cellIndex, str(value))` | emit to the cell's topic as a string |
+| `cell.emit(value)` (evolving) | `emitCellObject(cellIndex, value)` | emit the **live Python object** (avoids lossy `str()` round-trip) |
+| `cell.get()` (non-evolving) | `ask(cellIndex)` → `String` | `ModelActions.ask(cellId)`; registers a read dependency during `wait_until` |
+| `cell.get()` (evolving) | `askObject(cellIndex)` → object | returns the live Python object directly |
+| `linear_cell.set_rate(r)` | `setRate(cellIndex, rate)` | `LinearEffect(null, rate)` — changes the slope |
+| `spawn(child(...))` | `spawnActivity(name, argsJson)` | a fresh child `ThreadedTask`, with its own span |
 | `call(child(...))` | `callActivity(name, argsJson)` | a fresh child; **blocks** the caller until it finishes |
 | `wait_until(pred)` | `waitUntil(BooleanSupplier)` | wraps the Python predicate in a PlanDev `Condition` and yields |
 
@@ -89,8 +98,12 @@ Java                                   Python (GraalPy, same JVM)
  |                                      |
  |   [ instantiate() ]                  |
  |-- setConfiguration(json) ----------->|  (stored)
- |-- getCells()/getResources() -------->|  _ModelState(model_class, config)
- |  allocate a PlanDev cell per resource|
+ |-- getCells() ----------------------->|  _ModelState(model_class, config)
+ |-- getEvolutionFunctions() ---------->|    .get_evolution_functions()
+ |-- getInitialValues() --------------->|    .get_initial_values()
+ |-- getResourceProjections() --------->|    .get_resource_projections()
+ |  allocate a PlanDev cell per cell    |
+ |  register a Resource per cell        |
  |                                      |
  |   [ simulation begins ]              |
  |-- runActivityDirect(act-1, ...) ---->|  run_activity_direct(state, actions, ...)
@@ -100,6 +113,7 @@ Java                                   Python (GraalPy, same JVM)
  |   [ engine advances time ]           |
  |   ...unpark, continue...             |
  |<----- actions.spawnActivity(...) ----|      spawn(child(...))
+ |<----- actions.waitUntil(pred) -------|      wait_until(...)  (condition blocks)
  |  (returns when the function returns) |
  |                                      |
  |   [ simulation ends ]                |

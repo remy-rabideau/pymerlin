@@ -1,15 +1,35 @@
 # Model Test Drive
 
-:::{warning}
-This page is under construction. Please bear with us as we port
-our [Java tutorial](https://nasa-ammos.github.io/aerie-docs/tutorials/mission-modeling/introduction/) to python.
-:::
+Before uploading to PlanDev, you can test your model locally with `simulate()`. Then, when
+you're ready, package it for upload.
 
-:::{note}
-Python mission models **can** be packaged and uploaded to PlanDev now — they run in-process on
-GraalPy inside the worker (see [Architecture](../../architecture.md)). This page is still
-being ported from the Java tutorial, but the packaging workflow below is current.
-:::
+## Local simulation
+
+Add the following to the bottom of your `mission.py` (or a separate `main.py`):
+
+```python
+from pymerlin import simulate, Schedule, Directive
+
+profiles, spans, events = simulate(
+    Model,
+    Schedule.build(
+        ("00:00:00", Directive("collect_data", {"rate": 20.0, "duration": "00:10:00"})),
+    ),
+    "01:00:00"
+)
+
+print("Profiles:")
+for name, segments in profiles.items():
+    print(f"  {name}: {segments}")
+print("Spans:")
+for span in spans:
+    print(f"  {span}")
+```
+
+Run it with `python mission.py`. You should see `recording_rate` jump to 20.0 for 10
+minutes and return to 0.0 for the remainder.
+
+## Packaging for PlanDev
 
 Package your model into an uploadable JAR with `pymerlin package` (see the
 [Build a JAR guide](../../2_guides/build-jar.md) for details):
