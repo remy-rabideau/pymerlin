@@ -1,14 +1,48 @@
 import math
 
+import toml
+
 from pymerlin import MissionModel, MissionModelBase
 from pymerlin.clock import clock
 from pymerlin.duration import SECONDS, Duration
 from pymerlin.model_actions import delay, wait_until, spawn
 
 
+# Spacecraft parameters as a TOML document rather than as scattered literals -- the shape a
+# real mission keeps them in, where thermal and power numbers are owned by subsystem teams
+# rather than by whoever wrote the model.
+#
+# `toml` is NOT in the worker image's venv, and deliberately so: this import is what proves
+# the dependency machinery works end to end. `pymerlin package` reads it, writes
+# `toml==<version>` into the JAR's requirements.txt, and the worker pip-installs it into the
+# GraalPy venv before the model is loaded. Adding an import here is the whole workflow --
+# there is no dependency file to edit and no image to rebuild.
+#
+# Embedded as a string rather than read from a params.toml beside this file, because
+# `pymerlin package` bundles only *.py into the model JAR: a data file next to the model
+# would simply be absent at simulation time. Anything the model needs at runtime has to live
+# inside a .py, or arrive as a model configuration parameter.
+_PARAMETERS_TOML = """
+[power]
+battery_capacity_wh = 100.0
+
+[thermal]
+ambient_temp_c = 5.0
+tau_s = 1500.0
+c_per_w = 0.8
+waste_heat_fraction = 0.8
+
+[heatsink]
+tau_s = 300.0
+c_per_w = 1.2
+"""
+
+_PARAMS = toml.loads(_PARAMETERS_TOML)
+
+
 # Arbitrary demo battery capacity, Watt-hours. Only used to convert net Watts
 # into a %/sec rate for battery_pct.
-_BATTERY_CAPACITY_WH = 100.0
+_BATTERY_CAPACITY_WH = _PARAMS["power"]["battery_capacity_wh"]
 
 # --- Thermal model (cell evolution) ------------------------------------------------------
 #
@@ -33,20 +67,20 @@ _BATTERY_CAPACITY_WH = 100.0
 #
 # tau is deliberately long relative to activity durations (25 min) so a multi-hour plan
 # shows temperature still in motion rather than pinned at ambient the whole time.
-_AMBIENT_TEMP_C = 5.0
-_THERMAL_TAU_S = 1500.0
+_AMBIENT_TEMP_C = _PARAMS["thermal"]["ambient_temp_c"]
+_THERMAL_TAU_S = _PARAMS["thermal"]["tau_s"]
 
 # Degrees of steady-state rise per Watt of heat input. Combined with _WASTE_HEAT_FRACTION
 # below, collect_data's 15 W instrument settles at 5 + 15*0.8*0.8 = 14.6 C and downlink's
 # 25 W transmitter at 21 C -- comfortably above ambient, so warm-up is visible on the plot,
 # and hotter for the load that draws more, which is the point of deriving heat from power.
-_THERMAL_C_PER_W = 0.8
+_THERMAL_C_PER_W = _PARAMS["thermal"]["c_per_w"]
 
 # Fraction of drawn power that becomes waste heat in the structure. Not 1.0: some leaves as
 # radiated RF rather than heating the bus. A single fraction across all loads is a
 # simplification -- a real thermal model would weight each load separately (a transmitter
 # radiates away much more of its draw than an instrument does).
-_WASTE_HEAT_FRACTION = 0.8
+_WASTE_HEAT_FRACTION = _PARAMS["thermal"]["waste_heat_fraction"]
 
 
 def _thermal_evolution(state, elapsed):
@@ -70,11 +104,11 @@ def _thermal_evolution(state, elapsed):
 
 # Time constant for the electronics-box heatsink -- shorter than the structural tau
 # because it is thermally coupled directly to the PCBs rather than through the airframe.
-_HEATSINK_TAU_S = 300.0   # 5-minute time constant
+_HEATSINK_TAU_S = _PARAMS["heatsink"]["tau_s"]   # 5-minute time constant
 
 # Steady-state heatsink rise per Watt. Higher than _THERMAL_C_PER_W because the
 # heatsink has less thermal mass than the full structure and radiates less efficiently.
-_HEATSINK_C_PER_W = 1.2
+_HEATSINK_C_PER_W = _PARAMS["heatsink"]["c_per_w"]
 
 
 def _heatsink_evolution(state, elapsed):
