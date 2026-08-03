@@ -1,6 +1,6 @@
 # Architecture
 
-pymerlin lets you write [PlanDev](https://github.com/NASA-AMMOS/aerie) mission models
+pymerlin lets you write [PlanDev](https://github.com/NASA-AMMOS/plandev/tree/pymerlin/develop/) mission models
 in Python and run them on a discrete-event simulation engine, without re-implementing that
 engine yourself.
 

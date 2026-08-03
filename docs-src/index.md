@@ -4,7 +4,7 @@ hide-toc: true
 
 # pymerlin
 
-pymerlin is a Python mission-modeling framework for [PlanDev](https://github.com/NASA-AMMOS/aerie) (the Aerie fork). It lets you write PlanDev mission models in Python and either simulate them locally or package them as an uploadable mission-model JAR.
+pymerlin is a Python mission-modeling framework for [PlanDev](https://github.com/NASA-AMMOS/plandev/tree/pymerlin/develop/) (formerly Aerie). It lets you write PlanDev mission models in Python and either simulate them locally or package them as an uploadable mission-model JAR.
 
 ## What you can do
 

@@ -1,7 +1,7 @@
 # Contributing
 
 :::{note}
-These guidelines are adapted from [PlanDev's contributing guidelines](https://github.com/NASA-AMMOS/aerie/blob/develop/docs/CONTRIBUTING.md).
+These guidelines are adapted from [PlanDev's contributing guidelines](https://github.com/NASA-AMMOS/plandev/blob/develop/docs/CONTRIBUTING.md).
 :::
 
 We would love for you to contribute to pymerlin and help make it even better than it is
