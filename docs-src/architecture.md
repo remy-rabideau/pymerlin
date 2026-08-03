@@ -32,6 +32,32 @@ The local engine is a lightweight logic checker, not a profile-fidelity oracle. 
 your model *does the right things*; use the JUnit suite or a real deployment to check what the
 profile *looks like*.
 
+### How the two engines share code
+
+The model-facing APIs (`delay()`, `spawn()`, `call()`, `wait_until()`, `CellRef.emit()`,
+`CellRef.get()`) are the **same Python functions** regardless of which engine is driving. They
+all delegate to a `_ReactionContext` object stored in `_globals.reaction_context`. Each engine
+installs its own implementation of that context:
+
+- **Local** (`_framework.py`) — installs a `_ReactionContext` that uses Python `Queue`s to
+  yield and resume tasks within the pure-Python event loop.
+- **GraalPy** (`_server.py`) — installs a `_ReactionContext` whose methods call straight
+  into the Java host object (`java_actions.delay()`, `java_actions.waitUntil()`, etc.),
+  handing control back to the PlanDev merlin-driver.
+
+The shared modules that both engines build on:
+
+| Module | Role |
+|---|---|
+| `_registrar.py` | `Registrar` and `CellRef` — cell creation, `emit()`, `get()` |
+| `_globals.py` | Mutable state: `reaction_context`, `java_actions`, `cell_values_by_id` |
+| `_task_status.py` | `Delayed`, `Calling`, `Awaiting` yield types |
+| `_decorators.py` | `@MissionModel`, `@ActivityType`, `MissionModelBase` |
+| `model_actions.py` | `delay()`, `spawn()`, `call()`, `wait_until()` |
+| `duration.py` | `Duration` time type |
+
+The two engine files (`_framework.py` and `_server.py`) never import each other.
+
 The rest of this document describes the packaged, in-process path, since that's the one with
 the interesting Java↔Python boundary; the local engine is an ordinary Python program.
 
