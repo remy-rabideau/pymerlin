@@ -1,0 +1,6 @@
+pymerlin.spice.doy\_to\_et
+==========================
+
+.. currentmodule:: pymerlin.spice
+
+.. autofunction:: doy_to_et

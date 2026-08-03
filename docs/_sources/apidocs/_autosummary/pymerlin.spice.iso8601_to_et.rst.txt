@@ -1,0 +1,6 @@
+pymerlin.spice.iso8601\_to\_et
+==============================
+
+.. currentmodule:: pymerlin.spice
+
+.. autofunction:: iso8601_to_et

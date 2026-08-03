@@ -1,0 +1,6 @@
+pymerlin.spice.duration\_to\_et
+===============================
+
+.. currentmodule:: pymerlin.spice
+
+.. autofunction:: duration_to_et

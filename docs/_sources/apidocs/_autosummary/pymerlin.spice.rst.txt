@@ -1,0 +1,42 @@
+pymerlin.spice
+==============
+
+.. automodule:: pymerlin.spice
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   .. autosummary::
+      :toctree:
+   
+      doy_to_et
+      duration_to_et
+      et_to_duration
+      iso8601_to_et
+      spice_resource
+   
+   
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree:
+      :template: custom-class-template.rst
+   
+      SpiceKernel
+   
+   
+
+   
+   
+   
+
+
+

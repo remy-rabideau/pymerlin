@@ -1,0 +1,32 @@
+pymerlin.spice.SpiceKernel
+==========================
+
+.. currentmodule:: pymerlin.spice
+
+.. autoclass:: SpiceKernel
+   :members:
+   :show-inheritance:
+   :inherited-members:
+
+   
+   .. automethod:: __init__
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+   
+      ~SpiceKernel.__init__
+      ~SpiceKernel.et_to_utc
+      ~SpiceKernel.load_kernels
+      ~SpiceKernel.position
+      ~SpiceKernel.state
+      ~SpiceKernel.unload_kernels
+      ~SpiceKernel.utc_to_et
+      ~SpiceKernel.velocity
+   
+   
+
+   
+   
+   

@@ -1,0 +1,6 @@
+pymerlin.spice.spice\_resource
+==============================
+
+.. currentmodule:: pymerlin.spice
+
+.. autofunction:: spice_resource
