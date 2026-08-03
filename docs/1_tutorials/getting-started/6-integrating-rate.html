@@ -408,14 +408,17 @@ changes, then compute volume from the elapsed time and the previous rate.</p>
 <p>Then spawn a reactor:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">monitor_recording_rate</span><span class="p">(</span><span class="n">data_model</span><span class="p">):</span>
     <span class="n">previous_rate</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="c1"># .start() must run inside the task, not in __init__ -- cells are not allocated</span>
+    <span class="c1"># until simulation begins.</span>
+    <span class="n">timer</span> <span class="o">=</span> <span class="n">data_model</span><span class="o">.</span><span class="n">timer</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">new_value</span> <span class="ow">in</span> <span class="n">monitor_updates</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">data_model</span><span class="o">.</span><span class="n">recording_rate</span><span class="o">.</span><span class="n">get</span><span class="p">()):</span>
-        <span class="n">t</span> <span class="o">=</span> <span class="n">data_model</span><span class="o">.</span><span class="n">timer</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="n">t</span> <span class="o">=</span> <span class="n">timer</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">t</span> <span class="o">&gt;</span> <span class="n">Duration</span><span class="o">.</span><span class="n">ZERO</span><span class="p">:</span>
             <span class="n">data_model</span><span class="o">.</span><span class="n">ssr_volume_reactive</span> <span class="o">+=</span> <span class="p">(</span>
                 <span class="n">previous_rate</span> <span class="o">*</span> <span class="n">t</span><span class="o">.</span><span class="n">to_number_in</span><span class="p">(</span><span class="n">Duration</span><span class="o">.</span><span class="n">SECONDS</span><span class="p">)</span> <span class="o">/</span> <span class="mf">1000.0</span>
             <span class="p">)</span>
         <span class="n">previous_rate</span> <span class="o">=</span> <span class="n">new_value</span>
-        <span class="n">data_model</span><span class="o">.</span><span class="n">timer</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="n">timer</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
 
 <span class="c1"># In Model.__init__:</span>
 <span class="n">spawn</span><span class="p">(</span><span class="n">monitor_recording_rate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data_model</span><span class="p">))</span>

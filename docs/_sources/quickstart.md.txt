@@ -20,18 +20,13 @@ source venv/bin/activate    # macOS / Linux
 # venv\Scripts\activate     # Windows
 ```
 
-Install `pymerlin`:
+Install `pymerlin` from the GitHub repo (replace `v0.2.0` with the desired tag):
 
 ```shell
-pip install pymerlin
+pip install "pymerlin @ git+https://github.com/remy-rabideau/pymerlin.git@v0.2.0#subdirectory=pymerlin"
 ```
 
-### Optional extras
-
-```shell
-pip install pymerlin[spice]      # adds spiceypy for SPICE kernel support
-pip install pymerlin[plotting]   # adds bokeh + numpy for notebook plotting
-```
+This installs pymerlin and all its dependencies (`spiceypy`, `bokeh`, `numpy`).
 
 ## Verify installation
 

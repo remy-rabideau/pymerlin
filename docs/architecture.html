@@ -318,7 +318,7 @@
         <article role="main" id="furo-main-content">
           <section id="architecture">
 <h1>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">¶</a></h1>
-<p>pymerlin lets you write <a class="reference external" href="https://github.com/NASA-AMMOS/aerie">PlanDev</a> mission models
+<p>pymerlin lets you write <a class="reference external" href="https://github.com/NASA-AMMOS/plandev/tree/pymerlin/develop/">PlanDev</a> mission models
 in Python and run them on a discrete-event simulation engine, without re-implementing that
 engine yourself.</p>
 <section id="two-ways-a-model-runs">
@@ -372,6 +372,51 @@ produces and what an uploaded model uses.</p></li>
 <p>The local engine is a lightweight logic checker, not a profile-fidelity oracle. Use it to verify
 your model <em>does the right things</em>; use the JUnit suite or a real deployment to check what the
 profile <em>looks like</em>.</p>
+</section>
+<section id="how-the-two-engines-share-code">
+<h3>How the two engines share code<a class="headerlink" href="#how-the-two-engines-share-code" title="Link to this heading">¶</a></h3>
+<p>The model-facing APIs (<code class="docutils literal notranslate"><span class="pre">delay()</span></code>, <code class="docutils literal notranslate"><span class="pre">spawn()</span></code>, <code class="docutils literal notranslate"><span class="pre">call()</span></code>, <code class="docutils literal notranslate"><span class="pre">wait_until()</span></code>, <code class="docutils literal notranslate"><span class="pre">CellRef.emit()</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CellRef.get()</span></code>) are the <strong>same Python functions</strong> regardless of which engine is driving. They
+all delegate to a <code class="docutils literal notranslate"><span class="pre">_ReactionContext</span></code> object stored in <code class="docutils literal notranslate"><span class="pre">_globals.reaction_context</span></code>. Each engine
+installs its own implementation of that context:</p>
+<ul class="simple">
+<li><p><strong>Local</strong> (<code class="docutils literal notranslate"><span class="pre">_framework.py</span></code>) — installs a <code class="docutils literal notranslate"><span class="pre">_ReactionContext</span></code> that uses Python <code class="docutils literal notranslate"><span class="pre">Queue</span></code>s to
+yield and resume tasks within the pure-Python event loop.</p></li>
+<li><p><strong>GraalPy</strong> (<code class="docutils literal notranslate"><span class="pre">_server.py</span></code>) — installs a <code class="docutils literal notranslate"><span class="pre">_ReactionContext</span></code> whose methods call straight
+into the Java host object (<code class="docutils literal notranslate"><span class="pre">java_actions.delay()</span></code>, <code class="docutils literal notranslate"><span class="pre">java_actions.waitUntil()</span></code>, etc.),
+handing control back to the PlanDev merlin-driver.</p></li>
+</ul>
+<p>The shared modules that both engines build on:</p>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Module</p></th>
+<th class="head"><p>Role</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">_registrar.py</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Registrar</span></code> and <code class="docutils literal notranslate"><span class="pre">CellRef</span></code> — cell creation, <code class="docutils literal notranslate"><span class="pre">emit()</span></code>, <code class="docutils literal notranslate"><span class="pre">get()</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">_globals.py</span></code></p></td>
+<td><p>Mutable state: <code class="docutils literal notranslate"><span class="pre">reaction_context</span></code>, <code class="docutils literal notranslate"><span class="pre">java_actions</span></code>, <code class="docutils literal notranslate"><span class="pre">cell_values_by_id</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">_task_status.py</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Delayed</span></code>, <code class="docutils literal notranslate"><span class="pre">Calling</span></code>, <code class="docutils literal notranslate"><span class="pre">Awaiting</span></code> yield types</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">_decorators.py</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&#64;MissionModel</span></code>, <code class="docutils literal notranslate"><span class="pre">&#64;ActivityType</span></code>, <code class="docutils literal notranslate"><span class="pre">MissionModelBase</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model_actions.py</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">delay()</span></code>, <code class="docutils literal notranslate"><span class="pre">spawn()</span></code>, <code class="docutils literal notranslate"><span class="pre">call()</span></code>, <code class="docutils literal notranslate"><span class="pre">wait_until()</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">duration.py</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Duration</span></code> time type</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The two engine files (<code class="docutils literal notranslate"><span class="pre">_framework.py</span></code> and <code class="docutils literal notranslate"><span class="pre">_server.py</span></code>) never import each other.</p>
 <p>The rest of this document describes the packaged, in-process path, since that’s the one with
 the interesting Java↔Python boundary; the local engine is an ordinary Python program.</p>
 <blockquote>
@@ -418,10 +463,12 @@ intra-package imports work.</p></li>
 </ol>
 <p>The resulting JAR contains only shim classes, the bundled <code class="docutils literal notranslate"><span class="pre">gson</span></code> dependency, and your
 <code class="docutils literal notranslate"><span class="pre">.py</span></code> files — no GraalPy runtime, no Python stdlib, no third-party packages. The GraalPy
-runtime and stdlib come from the worker image. Any additional packages the model needs
-(detected from its imports and bundled as a <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code> inside the JAR) are
-pip-installed into the worker’s GraalPy venv <strong>when the model is uploaded</strong> — not at
-simulation time (see the <a class="reference internal" href="2_guides/build-jar.html"><span class="std std-doc">packaging guide</span></a> for details).</p>
+runtime and stdlib come from the worker image, which also pre-installs <code class="docutils literal notranslate"><span class="pre">numpy</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spiceypy</span></code> from wheels at image build time so they are always available. Any additional
+packages the model needs (detected from its imports and bundled as a <code class="docutils literal notranslate"><span class="pre">requirements.txt</span></code>
+inside the JAR) are pip-installed into the worker’s GraalPy venv <strong>when the model is
+uploaded</strong> — not at simulation time (see the <a class="reference internal" href="2_guides/build-jar.html"><span class="std std-doc">packaging guide</span></a>
+for details).</p>
 </section>
 <section id="cells-and-resources">
 <h2>Cells and resources<a class="headerlink" href="#cells-and-resources" title="Link to this heading">¶</a></h2>
@@ -578,6 +625,7 @@ Surfacing that traceback all the way to the PlanDev UI is tracked as remaining w
 <li><a class="reference internal" href="#">Architecture</a><ul>
 <li><a class="reference internal" href="#two-ways-a-model-runs">Two ways a model runs</a><ul>
 <li><a class="reference internal" href="#differences-between-the-two-engines">Differences between the two engines</a></li>
+<li><a class="reference internal" href="#how-the-two-engines-share-code">How the two engines share code</a></li>
 </ul>
 </li>
 <li><a class="reference internal" href="#in-process-execution">In-process execution</a></li>

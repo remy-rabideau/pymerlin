@@ -367,11 +367,43 @@ bounds for clamping.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">registrar.cell(v,</span> <span class="pre">evolution=fn)</span></code></strong> — an evolving cell with a custom evolution
 function <code class="docutils literal notranslate"><span class="pre">fn(value,</span> <span class="pre">elapsed_duration)</span> <span class="pre">→</span> <span class="pre">new_value</span></code> that the engine calls automatically
 as simulation time advances.</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">pymerlin.clock.clock(registrar)</span></code></strong> — a special evolving cell that tracks elapsed
-simulation time. Call <code class="docutils literal notranslate"><span class="pre">.start()</span></code> to get a stopwatch.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">pymerlin.clock.clock(registrar)</span></code></strong> — a <em>factory</em> holding one evolving cell that
+accumulates elapsed simulation time. Call <code class="docutils literal notranslate"><span class="pre">.start()</span></code> to get a stopwatch reading zero
+from that moment; <code class="docutils literal notranslate"><span class="pre">.reset()</span></code> re-zeroes it.</p></li>
 </ul>
 <p>Our <code class="docutils literal notranslate"><span class="pre">recording_rate</span></code> is a plain discrete cell — it stays constant until we explicitly
 change it.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">clock(registrar)</span></code> returns a <code class="docutils literal notranslate"><span class="pre">ClockMaker</span></code>, not a cell — it has no <code class="docutils literal notranslate"><span class="pre">.get()</span></code>, and you
+cannot pass it to <code class="docutils literal notranslate"><span class="pre">registrar.resource()</span></code>. Call <code class="docutils literal notranslate"><span class="pre">.start()</span></code> from <strong>inside an activity or
+task</strong>, never from <code class="docutils literal notranslate"><span class="pre">__init__</span></code>: cells are not allocated until simulation begins, so an
+early <code class="docutils literal notranslate"><span class="pre">.start()</span></code> fails with <code class="docutils literal notranslate"><span class="pre">KeyError:</span> <span class="pre">None</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">registrar</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">timer</span> <span class="o">=</span> <span class="n">clock</span><span class="p">(</span><span class="n">registrar</span><span class="p">)</span>      <span class="c1"># in __init__: build the factory</span>
+
+<span class="nd">@Model</span><span class="o">.</span><span class="n">ActivityType</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">my_activity</span><span class="p">(</span><span class="n">mission</span><span class="p">):</span>
+    <span class="n">clk</span> <span class="o">=</span> <span class="n">mission</span><span class="o">.</span><span class="n">timer</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>        <span class="c1"># in an activity: start a stopwatch</span>
+    <span class="n">delay</span><span class="p">(</span><span class="s2">&quot;00:05:00&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">clk</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>                   <span class="c1"># +00:05:00.0000.0 (a Duration)</span>
+</pre></div>
+</div>
+<p>Stopwatches are cheap: every <code class="docutils literal notranslate"><span class="pre">.start()</span></code> shares the same underlying cell and only stores
+an offset, so no extra cells or events are created.</p>
+<p>To expose elapsed time as a <strong>registered resource</strong> instead of a stopwatch, skip
+<code class="docutils literal notranslate"><span class="pre">clock()</span></code> and declare the evolving cell yourself — this is exactly what <code class="docutils literal notranslate"><span class="pre">clock()</span></code> does
+internally, and it gives you a <code class="docutils literal notranslate"><span class="pre">CellRef</span></code> you can register:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pymerlin.duration</span><span class="w"> </span><span class="kn">import</span> <span class="n">ZERO</span><span class="p">,</span> <span class="n">SECONDS</span>
+
+<span class="bp">self</span><span class="o">.</span><span class="n">met</span> <span class="o">=</span> <span class="n">registrar</span><span class="o">.</span><span class="n">cell</span><span class="p">(</span><span class="n">ZERO</span><span class="p">,</span> <span class="n">evolution</span><span class="o">=</span><span class="k">lambda</span> <span class="n">x</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span> <span class="n">x</span> <span class="o">+</span> <span class="n">d</span><span class="p">)</span>
+<span class="n">registrar</span><span class="o">.</span><span class="n">resource</span><span class="p">(</span><span class="s2">&quot;mission_elapsed_time&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">met</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="k">lambda</span> <span class="n">t</span><span class="p">:</span> <span class="n">t</span><span class="o">.</span><span class="n">to_number_in</span><span class="p">(</span><span class="n">SECONDS</span><span class="p">)))</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">.map()</span></code> projects the <code class="docutils literal notranslate"><span class="pre">Duration</span></code> to a number so the resource plots as elapsed
+seconds. Register the cell directly (<code class="docutils literal notranslate"><span class="pre">registrar.resource(&quot;met&quot;,</span> <span class="pre">self.met)</span></code>) only if you
+actually want the raw <code class="docutils literal notranslate"><span class="pre">Duration</span></code> as the profile value.</p>
+</div>
 </section>
 <section id="registering-a-resource">
 <h3>Registering a resource<a class="headerlink" href="#registering-a-resource" title="Link to this heading">¶</a></h3>

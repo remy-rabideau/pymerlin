@@ -323,10 +323,8 @@ provides python bindings to that toolkit.</p>
 <p>pymerlin provides integration with SPICE through the <code class="docutils literal notranslate"><span class="pre">pymerlin.spice</span></code> module, allowing you to compute spacecraft positions, velocities, and other geometric quantities within your simulations.</p>
 <section id="installation">
 <h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">¶</a></h2>
-<p>To use SPICE with pymerlin, install the optional <code class="docutils literal notranslate"><span class="pre">spice</span></code> dependency:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>pymerlin<span class="o">[</span>spice<span class="o">]</span>
-</pre></div>
-</div>
+<p><code class="docutils literal notranslate"><span class="pre">spiceypy</span></code> is included as a pymerlin dependency, so if you’ve already installed pymerlin
+you’re ready to go. See the <a class="reference internal" href="../quickstart.html"><span class="std std-doc">Quickstart</span></a> if you haven’t installed yet.</p>
 </section>
 <section id="getting-spice-kernels">
 <h2>Getting SPICE Kernels<a class="headerlink" href="#getting-spice-kernels" title="Link to this heading">¶</a></h2>
@@ -344,13 +342,15 @@ provides python bindings to that toolkit.</p>
 <h3>Setting up SPICE in Your Mission Model<a class="headerlink" href="#setting-up-spice-in-your-mission-model" title="Link to this heading">¶</a></h3>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pymerlin</span><span class="w"> </span><span class="kn">import</span> <span class="n">MissionModel</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">pymerlin.spice</span><span class="w"> </span><span class="kn">import</span> <span class="n">SpiceKernel</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">pymerlin.clock</span><span class="w"> </span><span class="kn">import</span> <span class="n">clock</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pymerlin.duration</span><span class="w"> </span><span class="kn">import</span> <span class="n">ZERO</span>
 
 <span class="nd">@MissionModel</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">MyMission</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">registrar</span><span class="p">):</span>
-        <span class="c1"># Initialize clock for time tracking</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">clock</span> <span class="o">=</span> <span class="n">clock</span><span class="p">(</span><span class="n">registrar</span><span class="p">)</span>
+        <span class="c1"># A cell that accumulates elapsed simulation time. Use a plain evolving cell</span>
+        <span class="c1"># rather than pymerlin.clock.clock(): clock() returns a ClockMaker factory with</span>
+        <span class="c1"># no .get(), and its .start() cannot be called from __init__.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">clock</span> <span class="o">=</span> <span class="n">registrar</span><span class="o">.</span><span class="n">cell</span><span class="p">(</span><span class="n">ZERO</span><span class="p">,</span> <span class="n">evolution</span><span class="o">=</span><span class="k">lambda</span> <span class="n">x</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span> <span class="n">x</span> <span class="o">+</span> <span class="n">d</span><span class="p">)</span>
         
         <span class="c1"># Initialize SPICE with kernel files</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">spice</span> <span class="o">=</span> <span class="n">SpiceKernel</span><span class="p">(</span><span class="n">registrar</span><span class="p">,</span> <span class="n">kernel_paths</span><span class="o">=</span><span class="p">[</span>
@@ -399,7 +399,7 @@ provides python bindings to that toolkit.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@MissionModel</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">MyMission</span><span class="p">:</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">registrar</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">clock</span> <span class="o">=</span> <span class="n">clock</span><span class="p">(</span><span class="n">registrar</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">clock</span> <span class="o">=</span> <span class="n">registrar</span><span class="o">.</span><span class="n">cell</span><span class="p">(</span><span class="n">ZERO</span><span class="p">,</span> <span class="n">evolution</span><span class="o">=</span><span class="k">lambda</span> <span class="n">x</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span> <span class="n">x</span> <span class="o">+</span> <span class="n">d</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">spice</span> <span class="o">=</span> <span class="n">SpiceKernel</span><span class="p">(</span><span class="n">registrar</span><span class="p">,</span> <span class="n">kernel_paths</span><span class="o">=</span><span class="p">[</span><span class="o">...</span><span class="p">])</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">spice</span><span class="o">.</span><span class="n">load_kernels</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">epoch_et</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">spice</span><span class="o">.</span><span class="n">utc_to_et</span><span class="p">(</span><span class="s2">&quot;2024-01-01T00:00:00&quot;</span><span class="p">)</span>

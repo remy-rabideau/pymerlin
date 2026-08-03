@@ -5,10 +5,10 @@ Jupyter notebooks. This makes notebooks ideal for rapid model iteration and visu
 
 ## Setup
 
-Install pymerlin with the plotting extra into your notebook environment:
+Install pymerlin into your notebook environment (bokeh and numpy are included):
 
 ```shell
-pip install pymerlin[plotting]
+pip install "pymerlin @ git+https://github.com/remy-rabideau/pymerlin.git@v0.2.0#subdirectory=pymerlin"
 ```
 
 ## Running a simulation

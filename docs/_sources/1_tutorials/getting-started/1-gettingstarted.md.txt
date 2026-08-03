@@ -55,11 +55,48 @@ events:
 - **`registrar.cell(v, evolution=fn)`** — an evolving cell with a custom evolution
   function `fn(value, elapsed_duration) → new_value` that the engine calls automatically
   as simulation time advances.
-- **`pymerlin.clock.clock(registrar)`** — a special evolving cell that tracks elapsed
-  simulation time. Call `.start()` to get a stopwatch.
+- **`pymerlin.clock.clock(registrar)`** — a *factory* holding one evolving cell that
+  accumulates elapsed simulation time. Call `.start()` to get a stopwatch reading zero
+  from that moment; `.reset()` re-zeroes it.
 
 Our `recording_rate` is a plain discrete cell — it stays constant until we explicitly
 change it.
+
+:::{note}
+`clock(registrar)` returns a `ClockMaker`, not a cell — it has no `.get()`, and you
+cannot pass it to `registrar.resource()`. Call `.start()` from **inside an activity or
+task**, never from `__init__`: cells are not allocated until simulation begins, so an
+early `.start()` fails with `KeyError: None`.
+
+```python
+def __init__(self, registrar):
+    self.timer = clock(registrar)      # in __init__: build the factory
+
+@Model.ActivityType
+def my_activity(mission):
+    clk = mission.timer.start()        # in an activity: start a stopwatch
+    delay("00:05:00")
+    print(clk.get())                   # +00:05:00.0000.0 (a Duration)
+```
+
+Stopwatches are cheap: every `.start()` shares the same underlying cell and only stores
+an offset, so no extra cells or events are created.
+
+To expose elapsed time as a **registered resource** instead of a stopwatch, skip
+`clock()` and declare the evolving cell yourself — this is exactly what `clock()` does
+internally, and it gives you a `CellRef` you can register:
+
+```python
+from pymerlin.duration import ZERO, SECONDS
+
+self.met = registrar.cell(ZERO, evolution=lambda x, d: x + d)
+registrar.resource("mission_elapsed_time", self.met.map(lambda t: t.to_number_in(SECONDS)))
+```
+
+The `.map()` projects the `Duration` to a number so the resource plots as elapsed
+seconds. Register the cell directly (`registrar.resource("met", self.met)`) only if you
+actually want the raw `Duration` as the profile value.
+:::
 
 ### Registering a resource
 

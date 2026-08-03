@@ -337,17 +337,11 @@ supplied by the worker image, not your laptop.</p>
 <span class="c1"># venv\Scripts\activate     # Windows</span>
 </pre></div>
 </div>
-<p>Install <code class="docutils literal notranslate"><span class="pre">pymerlin</span></code>:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>pymerlin
+<p>Install <code class="docutils literal notranslate"><span class="pre">pymerlin</span></code> from the GitHub repo (replace <code class="docutils literal notranslate"><span class="pre">v0.2.0</span></code> with the desired tag):</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;pymerlin @ git+https://github.com/remy-rabideau/pymerlin.git@v0.2.0#subdirectory=pymerlin&quot;</span>
 </pre></div>
 </div>
-<section id="optional-extras">
-<h3>Optional extras<a class="headerlink" href="#optional-extras" title="Link to this heading">¶</a></h3>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>pymerlin<span class="o">[</span>spice<span class="o">]</span><span class="w">      </span><span class="c1"># adds spiceypy for SPICE kernel support</span>
-pip<span class="w"> </span>install<span class="w"> </span>pymerlin<span class="o">[</span>plotting<span class="o">]</span><span class="w">   </span><span class="c1"># adds bokeh + numpy for notebook plotting</span>
-</pre></div>
-</div>
-</section>
+<p>This installs pymerlin and all its dependencies (<code class="docutils literal notranslate"><span class="pre">spiceypy</span></code>, <code class="docutils literal notranslate"><span class="pre">bokeh</span></code>, <code class="docutils literal notranslate"><span class="pre">numpy</span></code>).</p>
 </section>
 <section id="verify-installation">
 <h2>Verify installation<a class="headerlink" href="#verify-installation" title="Link to this heading">¶</a></h2>
@@ -423,10 +417,7 @@ pip<span class="w"> </span>install<span class="w"> </span>pymerlin<span class="o
             <ul>
 <li><a class="reference internal" href="#">Quickstart</a><ul>
 <li><a class="reference internal" href="#prerequisites">Prerequisites</a></li>
-<li><a class="reference internal" href="#installation">Installation</a><ul>
-<li><a class="reference internal" href="#optional-extras">Optional extras</a></li>
-</ul>
-</li>
+<li><a class="reference internal" href="#installation">Installation</a></li>
 <li><a class="reference internal" href="#verify-installation">Verify installation</a></li>
 <li><a class="reference internal" href="#next-steps">Next steps</a></li>
 </ul>
