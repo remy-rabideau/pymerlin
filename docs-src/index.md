@@ -34,7 +34,7 @@ Ready to get started? Check out the [Quickstart](./quickstart.md) guide or dive 
 
 ## Source code
 
-You can access the source code at: [https://github.com/mattdailis/pymerlin](https://github.com/mattdailis/pymerlin).
+You can access the source code at: [https://github.com/remy-rabideau/pymerlin](https://github.com/remy-rabideau/pymerlin).
 
 ## How to get help, contribute, or provide feedback
 
