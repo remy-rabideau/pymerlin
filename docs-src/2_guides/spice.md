@@ -7,11 +7,8 @@ pymerlin provides integration with SPICE through the `pymerlin.spice` module, al
 
 ## Installation
 
-To use SPICE with pymerlin, install the optional `spice` dependency:
-
-```bash
-pip install pymerlin[spice]
-```
+`spiceypy` is included as a pymerlin dependency, so if you've already installed pymerlin
+you're ready to go. See the [Quickstart](../quickstart.md) if you haven't installed yet.
 
 ## Getting SPICE Kernels
 

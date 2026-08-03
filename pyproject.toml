@@ -5,7 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "pymerlin"
 version = "0.2.0"
-dependencies = []
+dependencies = [
+  "spiceypy>=6.0.0",
+  "bokeh>=3.4.2",
+  "numpy>=2.0.0",
+]
 requires-python = ">=3.10"
 authors = [
   {name = "Matthew Dailis", email = "matthew.l.dailis@jpl.nasa.gov"},
@@ -21,12 +25,7 @@ classifiers = [
   "Programming Language :: Python"
 ]
 
-[project.optional-dependencies]
-plotting = [
-  "bokeh>=3.4.2",
-  "numpy>=2.0.0"
-]
-spice = ["spiceypy>=6.0.0"]
+#[project.optional-dependencies]
 #gui = ["PyQt5"]
 #cli = [
 #  "rich",
