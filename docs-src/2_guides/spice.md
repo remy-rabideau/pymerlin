@@ -27,13 +27,15 @@ Download kernels from the [NAIF website](https://naif.jpl.nasa.gov/naif/data.htm
 ```python
 from pymerlin import MissionModel
 from pymerlin.spice import SpiceKernel
-from pymerlin.clock import clock
+from pymerlin.duration import ZERO
 
 @MissionModel
 class MyMission:
     def __init__(self, registrar):
-        # Initialize clock for time tracking
-        self.clock = clock(registrar)
+        # A cell that accumulates elapsed simulation time. Use a plain evolving cell
+        # rather than pymerlin.clock.clock(): clock() returns a ClockMaker factory with
+        # no .get(), and its .start() cannot be called from __init__.
+        self.clock = registrar.cell(ZERO, evolution=lambda x, d: x + d)
         
         # Initialize SPICE with kernel files
         self.spice = SpiceKernel(registrar, kernel_paths=[
@@ -83,7 +85,7 @@ You can create resources that expose SPICE computations:
 @MissionModel
 class MyMission:
     def __init__(self, registrar):
-        self.clock = clock(registrar)
+        self.clock = registrar.cell(ZERO, evolution=lambda x, d: x + d)
         self.spice = SpiceKernel(registrar, kernel_paths=[...])
         self.spice.load_kernels()
         self.epoch_et = self.spice.utc_to_et("2024-01-01T00:00:00")

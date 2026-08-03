@@ -19,8 +19,7 @@ MagDataCollectionMode = {
 }
 :::
 
-% TODO: consider using aenum to allow for duplicate right-hand-sides of these
-assignments https://stackoverflow.com/a/35968057/15403349
+% TODO: consider using aenum to allow for duplicate right-hand-sides of these assignments https://stackoverflow.com/a/35968057/15403349
 
 With our enumeration built, we can now add a couple of new resources to our `DataModel` class. The first resource, which
 we'll call `mag_data_mode`, will track the current data collection mode for the magnetometer. Declare this resource as a

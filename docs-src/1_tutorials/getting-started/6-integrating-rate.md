@@ -108,14 +108,17 @@ Then spawn a reactor:
 ```python
 def monitor_recording_rate(data_model):
     previous_rate = 0.0
+    # .start() must run inside the task, not in __init__ -- cells are not allocated
+    # until simulation begins.
+    timer = data_model.timer.start()
     for new_value in monitor_updates(lambda: data_model.recording_rate.get()):
-        t = data_model.timer.get()
+        t = timer.get()
         if t > Duration.ZERO:
             data_model.ssr_volume_reactive += (
                 previous_rate * t.to_number_in(Duration.SECONDS) / 1000.0
             )
         previous_rate = new_value
-        data_model.timer.start()
+        timer.reset()
 
 # In Model.__init__:
 spawn(monitor_recording_rate(self.data_model))
