@@ -130,6 +130,13 @@ dependencies {
     testRuntimeOnly "org.graalvm.polyglot:polyglot:${graalPyVersion}"
     testRuntimeOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
     testRuntimeOnly "gov.nasa.jpl.aerie:graalpy-engine-cache:${plandevVersion}"
+    // Added ALONGSIDE the testRuntimeOnly lines above, not replacing them: the runtime
+    // classpath is already correct and stays untouched: this only lets test SOURCE name
+    // these types. RequirementsInstallIntegrationTest builds a Context directly, because
+    // "a Context created after the pip install can import the new package" is the claim
+    // under test and there is no way to state it without naming Context.
+    testCompileOnly "org.graalvm.polyglot:polyglot:${graalPyVersion}"
+    testCompileOnly "org.graalvm.python:python-embedding:${graalPyVersion}"
     testImplementation "gov.nasa.jpl.aerie:merlin-sdk:${plandevVersion}"
     testImplementation name: 'merlin-driver'
     testImplementation name: 'type-utils'
@@ -203,6 +210,19 @@ jar {
 // classpath path mask the new ones -- new test classes fail with ClassNotFoundException
 // while old ones still resolve, which reads as a partial failure but is really "you're
 // running last time's bundle".
+//
+// Install the demo model's Python dependencies first -- `toml`, as of the parameter block
+// at the top of demo/model.py:
+//   docker exec aerie_merlin_worker_1 \
+//     /opt/pymerlin/python-resources/venv/bin/pip install --no-cache-dir toml
+//
+// This step is NOT the auto-install being broken; it is these tests deliberately stepping
+// around it. `pymerlin.model.ref` points the shim straight at a .py, so resolveModelRef
+// returns before it ever reads a JAR manifest -- and the manifest is what declares the
+// requirements. A model loaded the way a user loads one (an uploaded JAR) installs its own
+// dependencies; a model loaded from a bare path cannot, because there is nothing to read
+// them from. Skip this and every test below fails with
+// "Could not fetch activity types: ModuleNotFoundError: No module named 'toml'".
 //   docker exec aerie_merlin_worker_1 java \
 //     -cp "/tmp/docker-test-bundle/classes:/tmp/docker-test-bundle/lib/*" \
 //     -Dpymerlin.model.ref=/usr/src/pymerlin/demo/model.py:Mission \
@@ -212,6 +232,18 @@ jar {
 //     --select-class gov.nasa.ammos.aerie.pymerlin.shim.DemoModelSimulationTest \
 //     --select-class gov.nasa.ammos.aerie.pymerlin.shim.SpanTimingTest \
 //     --select-class gov.nasa.ammos.aerie.pymerlin.shim.CallSemanticsTest --details=verbose
+//
+// RequirementsInstallIntegrationTest is in this set too, but INSTALLS INTO THE VENV it is
+// pointed at (a small pure-Python package, uninstalled again after each test). Run it in a
+// throwaway container rather than one carrying work you care about:
+//   docker run --rm -v "$PWD/build/docker-test-bundle:/tmp/bundle:ro" \
+//     --entrypoint java aerie_merlin_worker_1:latest \
+//     -cp "/tmp/bundle/classes:/tmp/bundle/lib/*" \
+//     -Dpymerlin.resources=/opt/pymerlin/python-resources -Dpymerlin.test.graal=true \
+//     org.junit.platform.console.ConsoleLauncher execute \
+//     --select-class gov.nasa.ammos.aerie.pymerlin.shim.RequirementsInstallIntegrationTest \
+//     --details=tree
+// It also needs outbound network for pip, which the other tests here do not.
 //
 // Nothing Python-related moves across the container boundary, so none of the SELinux/
 // ownership/symlink-portability problems a venv copy hits are in play here — only class

@@ -8,6 +8,12 @@ bokeh>=3.4.2      # plotting
 numpy>=2.0.0      # plotting
 spiceypy>=6.0.0   # spice
 
+# Needed by demo/model.py, which parses its spacecraft parameters from TOML. Listed here so
+# `demo/main.py` and the local simulate() engine work; the WORKER gets it a different way --
+# `pymerlin package` detects the import and writes it into the model JAR's requirements.txt.
+# This file is never consulted for that, and is not bundled into any JAR.
+toml>=0.10.2
+
 # Dev / docs toolchain
 myst-parser
 build

@@ -24,11 +24,13 @@ import gov.nasa.jpl.aerie.merlin.protocol.types.Unit;
 import gov.nasa.jpl.aerie.merlin.protocol.types.ValueSchema;
 import org.graalvm.polyglot.Value;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.net.JarURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -462,6 +464,11 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
                     Manifest mf = new Manifest(is);
                     String ref = mf.getMainAttributes().getValue("Pymerlin-Model-Ref");
                     if (ref != null && !ref.isBlank()) {
+                        // Before the model source is even extracted, and well before any
+                        // GraalPy Context exists: pip mutates the venv's site-packages, and
+                        // a Context that is already open has module state cached from before
+                        // the install.
+                        prepareRequirements(jarUrl, mf);
                         return extractIfBundled(ref.trim());
                     }
                 }
@@ -472,6 +479,86 @@ public final class ShimModelType implements ModelType<Map<String, SerializedValu
 
         throw new RuntimeException("[PyMerlin] No Pymerlin-Model-Ref found in JAR manifest. " +
             "Did you build the JAR with 'pymerlin package'?");
+    }
+
+    // -----------------------------------------------------------------
+    // Python dependencies declared by the model JAR
+    // -----------------------------------------------------------------
+
+    /**
+     * Requirements text this classloader has already handed to the installer, so the work is
+     * not repeated for every entry point that resolves the model ref (the server asks for
+     * activity types and configuration separately, and both land here).
+     * <p>
+     * A static is the right scope for that and ONLY that — it saves a redundant call within
+     * one model load. It is NOT what makes installs idempotent: Aerie loads each model
+     * through its own {@code URLClassLoader}, which reloads this class and resets every
+     * static, so a cache built on one would miss every time while looking like it worked.
+     * State that has to outlive a model load lives on the filesystem, in the marker files
+     * {@link RequirementsInstaller} writes next to the venv they describe.
+     */
+    private static volatile String preparedRequirements = null;
+
+    /**
+     * Install the Python packages the model JAR declares into the worker's GraalPy venv.
+     * <p>
+     * A model needing nothing beyond the image reaches neither the installer nor the venv,
+     * so nothing about packaging a model without dependencies changes.
+     */
+    private static void prepareRequirements(URL jarUrl, Manifest manifest) throws IOException {
+        String requirements = readBundledRequirements(jarUrl, manifest);
+        if (requirements == null) return;
+
+        List<String> declared = declaredPackages(requirements);
+        if (declared.isEmpty()) return;   // a file of nothing but comments asks for nothing
+
+        if (requirements.equals(preparedRequirements)) return;
+
+        System.err.println("[PyMerlin] Model declares " + declared.size()
+            + " Python package(s): " + String.join(", ", declared));
+        RequirementsInstaller.install(requirements, PyContext.resolveResourcesRoot());
+        preparedRequirements = requirements;
+    }
+
+    /**
+     * The text of the requirements.txt bundled in {@code jarUrl}, or null when the JAR
+     * declares none.
+     * <p>
+     * The manifest attribute carries the entry's path rather than this code hardcoding it,
+     * so the two sides agree on one string written in one place ({@code pymerlin package}).
+     * The entry is read from the same JAR the manifest came from, not through the
+     * classloader, for the reason {@link #resolveModelRef} documents: a resource lookup
+     * would search parent classloaders first and could answer from an unrelated JAR.
+     * <p>
+     * Content, not a temp file: the installer needs to hash it to decide whether the venv
+     * is already up to date, and writing a file it may not use is work in the wrong order.
+     */
+    static String readBundledRequirements(URL jarUrl, Manifest manifest) throws IOException {
+        String entry = manifest.getMainAttributes().getValue("Pymerlin-Requirements");
+        if (entry == null || entry.isBlank()) return null;
+
+        URL entryUrl = new URL("jar:" + jarUrl.toExternalForm() + "!/" + entry.trim());
+        try (InputStream is = entryUrl.openStream()) {
+            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (FileNotFoundException e) {
+            // The manifest promises an entry the JAR does not contain. Only a broken or
+            // hand-edited JAR gets here, and continuing would turn it into an ImportError
+            // during simulation, far from the cause.
+            throw new RuntimeException("[PyMerlin] Model JAR declares Pymerlin-Requirements: "
+                + entry.trim() + ", but the JAR has no such entry. Rebuild it with"
+                + " 'pymerlin package'.", e);
+        }
+    }
+
+    /** The requirement lines of a requirements.txt, with comments and blank lines dropped. */
+    private static List<String> declaredPackages(String requirements) {
+        List<String> packages = new ArrayList<>();
+        for (String line : requirements.split("\\R")) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+            packages.add(trimmed);
+        }
+        return packages;
     }
 
     /**
