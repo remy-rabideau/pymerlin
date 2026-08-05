@@ -2,6 +2,20 @@
 
 ## 0.2.1 (2026-08-03)
 
+### Added
+- **A model's Python dependencies travel with its JAR.** `pymerlin package` reads the model's
+  own `import` statements, pins each third-party package to the version installed alongside
+  the model, and bundles the result into the JAR as `pymerlin_requirements.txt`. At model-load
+  time the shim's `RequirementsInstaller` pip-installs anything missing into that container's
+  GraalPy venv, using the venv's own pip with `${PYMERLIN_RESOURCES}/constraints.txt` as
+  `PIP_CONSTRAINT`; a marker file per requirements-set and a lock keep repeat loads and
+  concurrent simulations from installing twice. Adding an import to a model is now the whole
+  workflow — no image rebuild for a package the image happens to lack, and no dependency file
+  to keep in sync with the code. The imports are the only declaration read: a `requirements.txt`
+  next to the model is ignored, and `--no-requirements` is the opt-out. Note that installs are
+  per container — `merlin-server` at upload, each `merlin-worker` at its first simulation of
+  that model — and need outbound network at that moment.
+
 ### Changed
 - **`spiceypy`, `bokeh`, and `numpy` are now core dependencies.** They were previously
   declared as optional extras, but the extras block was commented out in `pyproject.toml`,

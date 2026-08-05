@@ -43,10 +43,28 @@ into it under `pymerlin_models/`, and stamps the model reference into the JAR ma
 directory is bundled so intra-package imports keep working. The resulting JAR uploads to a
 deployed PlanDev instance like any Java mission model.
 
-The JAR is deliberately thin: it contains only the shim classes, the bundled `gson`
-dependency (used for Java↔Python argument/description marshalling), and your model source.
-It does **not** contain the GraalPy runtime, the Python standard library, or any Python
-packages — those are supplied by the worker image at simulation time.
+Packaging also reads the model's own `import` statements and writes what it finds into the
+JAR as `pymerlin_requirements.txt`, pinned to the versions installed alongside the model:
+
+```shell
+pymerlin package --model demo/model.py:Mission --out mission-model.jar
+# [pymerlin] Preinstalled:    pymerlin (already in the worker image)
+# [pymerlin] Requirements:    generated from the model's imports
+# [pymerlin]                  toml==0.10.2
+# [pymerlin] Bundled:         pymerlin_requirements.txt
+```
+
+Those imports *are* the dependency declaration: there is nothing to write by hand, and a
+`requirements.txt` sitting next to your model is **not** read. `--no-requirements` is the
+only opt-out, and it ships a model that gets whatever the worker image already has and
+nothing else. See [Model dependencies](#model-dependencies) for what the worker does with
+that file, and for what import scanning cannot see.
+
+The JAR carries no Python: it holds the shim classes and the Java libraries they need
+(`gson` for Java↔Python argument/description marshalling, `merlin-framework` and its Apache
+Commons transitives), your model source, and that requirements file. It does **not** contain
+the GraalPy runtime, the Python standard library, or any Python package — those come from
+the worker image, or from the pip install the requirements file drives.
 
 ## Worker-image contract
 
@@ -59,7 +77,7 @@ produces (external-directory mode) is:
 
 ```
 /opt/pymerlin/python-resources/
-  venv/   <- GraalPy virtualenv: pymerlin + numpy + spiceypy
+  venv/   <- GraalPy virtualenv: pymerlin + numpy + spiceypy, plus what a model declares
   src/    <- empty; required by GraalPyResources' external-directory convention
 ```
 
@@ -71,9 +89,11 @@ context to build, but nothing is ever written to it. (Relocating the model sourc
 was considered and deferred — it only becomes necessary if filesystem access is sandboxed,
 which would stop the shim from reading an arbitrary temp path.)
 
-**Packages available to a model:** the pre-built venv contains exactly **`pymerlin`,
-`numpy`, and `spiceypy`** (a fixed set — see `roadmap.md` §11.2). `pymerlin` is installed
-from a pinned git ref (`PYMERLIN_GIT_URL`/`PYMERLIN_REF` in `install.sh`) — the image build
+**Packages the image provides:** the pre-built venv ships **`pymerlin`, `numpy`, and
+`spiceypy`**. Anything else a model imports is installed into that venv at model-load time,
+from the requirements file in the model's own JAR — see
+[Model dependencies](#model-dependencies) below. `pymerlin` is installed from a pinned git
+ref (`PYMERLIN_GIT_URL`/`PYMERLIN_REF` in `install.sh`) — the image build
 no longer needs a local pymerlin checkout alongside `plandev/`, so a model author working
 from just `pip install pymerlin` and a standalone model file never needs this repo either.
 `numpy`/`spiceypy` are installed with GraalPy's own patched `pip` against its wheel
@@ -93,16 +113,46 @@ versions agree" step automates half of this (a given pymerlin ref's shim version
 `GRAALPY_VERSION`); there is no equivalent automated check yet that `install.sh`'s *currently
 pinned* `PYMERLIN_REF` specifically satisfies it.
 
-**If your model needs a package that isn't in the venv:** a missing dependency is an
-**image rebuild**, not a JAR change. Add the package to the install step in
-`plandev/docker/graalpy/install.sh` (pin it in
-[`constraints.txt`](../plandev/docker/graalpy/constraints.txt) so isolated build
-environments resolve GraalPy-compatible versions), rebuild the `merlin-worker` and
-`merlin-server` images, and redeploy. Packages with native extensions must build cleanly
-under GraalPy — most pure-Python and the vetted native packages (numpy, spiceypy/CSPICE)
-do, but this is the thing to validate before relying on it. A per-model
-`requirements.txt` layered into an ephemeral venv at startup is a deliberate non-goal for
-now; add it only if a real need appears (`roadmap.md` §11.2).
+### Model dependencies
+
+The shim installs what a model JAR declares before it opens a GraalPy `Context`
+(`RequirementsInstaller`, called from `ShimModelType.resolveModelRef`), using the **venv's
+own pip** — never a system pip, because CPython wheels install cleanly under GraalPy and
+then fail at import. Each installed requirements-set leaves a marker file next to the venv
+and the run is guarded by a lock, so repeat loads and concurrent simulations install once.
+
+Two consequences of *where* that runs are worth knowing before the first upload:
+
+- **It happens once per container, not once per model.** `merlin-server` loads the model at
+  upload time to register its activity types, so that image installs then; each
+  `merlin-worker` installs the first time *it* simulates that model. Nothing is shared
+  between them — there is no volume over `/opt/pymerlin` — so a dependency problem can
+  surface at simulation time even though the upload succeeded, and a recreated container
+  installs again from scratch.
+- **The container needs outbound network at that moment**, to reach pypi.org and GraalPy's
+  wheel repository. Without it the install fails, and the model fails to load carrying pip's
+  own error rather than an unexplained `ImportError` later.
+
+Pip runs with `${PYMERLIN_RESOURCES}/constraints.txt` (written by
+[`install.sh`](../plandev/docker/graalpy/install.sh)) as `PIP_CONSTRAINT`, which is what
+keeps a model from dragging the venv onto a version with no prebuilt GraalPy wheel.
+
+**What import scanning cannot see.** Versions are pinned from *your* environment, which is
+CPython: if GraalPy's wheel repository has no build of that exact version, the pin fails
+where an unpinned requirement would have resolved. Packaging warns when a requirement ships
+compiled extensions, and when it cannot resolve an import name to an installed distribution
+— in that case it falls back to the import name itself, so a typo becomes a `pip install` of
+that typo. Dynamic imports (`importlib.import_module("pandas")`) are invisible to a static
+scan and simply never get installed; import the package normally somewhere in the model
+instead. Scanning covers every file in a bundled package directory, including ones the
+worker never runs, so a package's local plotting or driver script can pull its own imports
+into the model's requirements.
+
+**When an image rebuild is still the answer:** a package needing a toolchain the image
+lacks, or one you want present before any model asks for it (as `numpy` and `spiceypy` are).
+Add it to the install step in `plandev/docker/graalpy/install.sh`, pin it in
+[`constraints.txt`](../plandev/docker/graalpy/constraints.txt), and rebuild both the
+`merlin-worker` and `merlin-server` images.
 
 ## Architecture
 

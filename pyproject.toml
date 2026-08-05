@@ -33,11 +33,11 @@ classifiers = [
 #]
 
 [project.urls]
-Homepage = "https://mattdailis.github.io/pymerlin"
-Documentation = "https://mattdailis.github.io/pymerlin"
-Repository = "https://github.com/mattdailis/pymerlin"
-"Bug Tracker" = "https://github.com/mattdailis/pymerlin/issues"
-Changelog = "https://github.com/mattdailis/pymerlin/blob/main/CHANGELOG.md"
+Homepage = "https://remy-rabideau.github.io/pymerlin"
+Documentation = "https://remy-rabideau.github.io/pymerlin"
+Repository = "https://github.com/remy-rabideau/pymerlin"
+"Bug Tracker" = "https://github.com/remy-rabideau/pymerlin/issues"
+Changelog = "https://github.com/remy-rabideau/pymerlin/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pymerlin = "pymerlin._internal._cli:main"
