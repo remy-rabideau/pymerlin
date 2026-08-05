@@ -1,0 +1,54 @@
+Here are some notes from meetings, mainly a list of things to do (and not do) to get pymerlin released.
+
+Performance test
+
+Regression test (./gradlew test must pass for GraalVM)
+
+Scheduling (unnecessary for now)
+
+constraints (unnecessary for now)
+
+External events — not needed, orthogonal
+External datasets — not needed, orthogonal
+
+streamline library — would be interesting to see how to access it from Python.  Since you migrated the orbiter model, maybe the current set of resources is sufficient and none are needed, but it would be good to review the streamline library features.  I usually just point people to Demo.java for examples.  Here are links from the Teams chat:
+https://github.com/NASA-AMMOS/plandev/tree/develop/contrib/src/main/java/gov/nasa/jpl/aerie/contrib
+https://github.com/NASA-AMMOS/plandev/blob/develop/contrib/src/main/java/gov/nasa/jpl/aerie/contrib/streamline/streamline-guide.md
+
+Put the pymerlin repo in NASA-AMMOS and make available from pypy
+
+Get working in same branch with the original, non-Graal plandev
+Docker compose yaml
+Dockerfile files
+
+Bring doc over from pymerlin to plandev-doc
+
+Make sure the top-level docs introduce it non-confusingly (Dan’s suggestions for explaining what it means, etc.)
+
+Right now, creating the python jar requires the python to be in one file.  Need to support multiple files.
+
+Pass python errors to UI log.
+
+spinner for installing python packages
+
+spice resources not working -- investigate
+
+simulation timeout -- probably not needed because PlanDev should behave the same with Python, but testing would be good.  Maybe PlanDev doesn't have timeouts anyway.
+
+ensure complex resource types (dictionaries, lists, objects) work properly.
+
+Review resource interface.
+
+Packaging of plandev with pymerlin repo -- best for a version to be set and jars downloaded
+
+version for pymerlin
+
+debugging experience?
+
+
+
+
+	
+
+
+
